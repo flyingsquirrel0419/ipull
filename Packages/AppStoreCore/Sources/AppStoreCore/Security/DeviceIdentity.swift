@@ -25,7 +25,10 @@ public enum DeviceIdentity {
 
     static func generateGUID() -> String {
         #if canImport(UIKit) && !os(macOS)
-        if let vendorID = UIDevice.current.identifierForVendor {
+        // UIDevice.current is main-actor isolated under Swift 6; GUID
+        // generation only ever happens on first launch from the main flow.
+        if Thread.isMainThread,
+           let vendorID = MainActor.assumeIsolated({ UIDevice.current.identifierForVendor }) {
             return guidFromUUID(vendorID)
         }
         #endif
