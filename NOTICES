@@ -1,0 +1,35 @@
+iPull — third-party acknowledgements
+=====================================
+
+Protocol research
+-----------------
+App Store protocol behavior (endpoint layout, failure codes, storefront
+table, purchase/download payload shapes, 2FA flow) was studied from:
+
+  majd/ipatool  — https://github.com/majd/ipatool
+  License: MIT. Copyright (c) 2021 Majd Alfhaily.
+
+No Go source code was copied. The storefront country table in
+Packages/AppStoreCore/Sources/AppStoreCore/Models/Storefront.swift is
+derived from the data table in that project and carries its MIT terms
+(reproduced in LICENSE section below as required).
+
+  AhmedBafkir/DLiPA — https://github.com/AhmedBafkir/DLiPA
+  Product reference only (feature set, on-device feasibility); the
+  repository publishes no source code and no license.
+
+MIT License (majd/ipatool)
+--------------------------
+Copyright (c) 2021 Majd Alfhaily
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND.
