@@ -1,0 +1,66 @@
+name: Bug Report
+description: Something in iPull isn't working
+title: "[Bug]: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. **Never include your Apple Account email,
+        password, 2FA codes, session tokens, or full signed URLs.**
+  - type: textarea
+    id: summary
+    attributes:
+      label: What happened?
+      description: Expected vs. actual behavior.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Open iPull
+        2. ...
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Sign-in / 2FA
+        - Search / app resolution
+        - Version list
+        - Download
+        - Library / export
+        - Share Extension
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Device & iOS version
+      placeholder: "iPhone 15, iOS 17.5"
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: iPull version or commit
+      placeholder: "1.0.0 or git SHA"
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant error messages
+      description: The on-screen error text or sanitized log lines. Redact anything that looks like a token.
+  - type: checkboxes
+    id: redaction
+    attributes:
+      label: Redaction check
+      options:
+        - label: I have not included credentials, tokens, or signed URLs.
+          required: true

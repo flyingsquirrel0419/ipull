@@ -1,15 +1,28 @@
 # Changelog
 
-## 1.0.0
+All notable, user-visible changes are listed here. Dates are ISO 8601.
 
-Initial release.
+## [1.0.0] - 2026-09-23
 
-- Apple Account sign-in with 2FA, Keychain-persisted session
-- App resolution by App Store URL, App ID, Bundle ID, and name search
-- Share Extension (App Store / Safari → iPull → App Detail)
-- Version browser with historical versions and external version IDs
+### Added
+
+- Apple Account sign-in with 2FA; session persisted in the iOS Keychain
+  (device-bound, AfterFirstUnlockThisDeviceOnly)
+- App resolution by App Store URL, numeric App ID, Bundle ID, and name
+  search (public iTunes Search API)
+- Share Extension: App Store / Safari → Share → iPull → App Detail via
+  App Group handoff and `ipull://resolve` deep link
+- Version browser: latest + historical versions via external version IDs,
+  with on-demand display-name resolution
 - IPA downloads: queue, progress, speed, cancel, retry with resume data,
-  background session, restart recovery
-- Library: SHA-256 (streaming), share, Save to Files, rename, delete,
-  duplicate detection, storage usage
-- Purchased apps listing (best effort)
+  background URLSession, restart recovery
+- Library (SwiftData): streaming SHA-256, share sheet, Save to Files,
+  rename, delete, duplicate detection, storage usage
+- Purchased apps listing (best effort; private endpoint)
+- CI: GitHub Actions macOS pipeline producing an unsigned IPA artifact
+  plus AppStoreCore unit tests (43 tests)
+
+### Security
+
+- Passwords are never persisted; session secrets are Keychain-only; logs
+  pass through a redacting logger.

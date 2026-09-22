@@ -2,21 +2,21 @@
 
 ## Scope
 
-iPull handles Apple Account credentials and session tokens. This document
-states what iPull does with them and how to report problems.
+iPull handles Apple Account credentials and session tokens on-device. This
+document states what iPull does with them and how to report problems.
 
 ## Credential handling
 
-- The Apple Account **password is never persisted** — it lives only in
-  memory for the duration of a sign-in attempt, and the password field is
-  cleared after each attempt.
-- The resulting **session token** (passwordToken), DSID and storefront are
-  stored in the iOS **Keychain** with
-  `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly` — device-bound,
-  excluded from backups and device migrations.
-- There is **no iPull backend**. Credentials and tokens are sent only to
-  Apple endpoints over TLS. Nothing is proxied, logged remotely, or shared
-  with analytics.
+- The Apple Account **password is never persisted** — it exists only in
+  memory for the duration of a sign-in attempt, and the field is cleared
+  after each attempt.
+- The **session token** (passwordToken), DSID and storefront are stored in
+  the iOS **Keychain** with
+  `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly` — device-bound and
+  excluded from backups and device migration.
+- There is **no iPull backend**. Credentials and tokens go only to Apple
+  endpoints over TLS. Nothing is proxied, logged remotely, or sent to
+  analytics.
 - Debug logging routes through a redacting logger that strips tokens,
   passwords and DSID values before emission.
 - `AppleAccountSession` redacts the token from `description` /
@@ -25,11 +25,24 @@ states what iPull does with them and how to report problems.
 ## Out of scope (by design)
 
 iPull does not bypass FairPlay DRM, decrypt IPAs, sign apps, inject code,
-or redistribute packages. If you are looking for a vulnerability in those
-areas, the feature does not exist.
+or redistribute packages. Vulnerabilities in those areas cannot exist
+because the features do not.
 
-## Reporting
+## Reporting a vulnerability
 
-Open a GitHub issue marked "security" or contact the maintainers privately
-via GitHub's private vulnerability reporting for the repository.
-Please do not include your own credentials or tokens in any report.
+**Do not open a public issue for credential- or protocol-level
+vulnerabilities.**
+
+Use GitHub's **private vulnerability reporting** on this repository
+(Security tab → "Report a vulnerability"). Include:
+
+- Affected version or commit
+- Impact and reproduction steps
+- Sanitized evidence — **never include your credentials, 2FA codes,
+  session tokens, or full signed URLs**
+
+If private reporting is unavailable, open a minimal public issue that
+states only that a security issue exists and requests a private contact —
+no details, no exploit description.
+
+General hardening suggestions are welcome as normal feature requests.
