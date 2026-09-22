@@ -68,7 +68,15 @@ public final class AuthenticationService: AuthenticationServicing, @unchecked Se
         }
 
         let guid = try guidProvider()
-        let bag = try await bagProvider.bag(guid: guid)
+        Log.info(.auth, "sign-in start (guid resolved)")
+        let bag: Bag
+        do {
+            bag = try await bagProvider.bag(guid: guid)
+            Log.info(.auth, "bag fetched; auth endpoint host OK")
+        } catch {
+            Log.error(.auth, "bag fetch failed: \(String(describing: type(of: error)))")
+            throw error
+        }
 
         var endpoint = bag.authEndpoint
         var attempt = 1
@@ -84,7 +92,14 @@ public final class AuthenticationService: AuthenticationServicing, @unchecked Se
                 guid: guid,
                 attempt: requestAttempt
             )
-            let signature = try await signer.sign(body: body)
+            let signature: String
+            do {
+                signature = try await signer.sign(body: body)
+                Log.info(.auth, "SAP signature produced (attempt \(requestAttempt))")
+            } catch {
+                Log.error(.auth, "SAP signing failed: \(String(describing: type(of: error)))")
+                throw error
+            }
 
             let request = HTTPRequest(
                 url: endpoint,
@@ -94,7 +109,14 @@ public final class AuthenticationService: AuthenticationServicing, @unchecked Se
                     "X-Apple-ActionSignature": signature,
                 ]
             )
-            let response = try await http.send(request, body: body)
+            let response: HTTPResponse
+            do {
+                response = try await http.send(request, body: body)
+                Log.info(.auth, "authenticate response HTTP \(response.statusCode)")
+            } catch {
+                Log.error(.auth, "authenticate request failed: \(String(describing: type(of: error)))")
+                throw error
+            }
 
             if response.statusCode == 429 {
                 let retryAfter = response.header("Retry-After").flatMap { Int($0) }
@@ -111,8 +133,10 @@ public final class AuthenticationService: AuthenticationServicing, @unchecked Se
             }
 
             guard let plist = try? PropertyListSerialization.propertyList(from: response.data, format: nil) as? [String: Any] else {
+                Log.error(.auth, "malformed auth response body (\(response.data.count) bytes)")
                 throw AppStoreError.unknown("Malformed authentication response")
             }
+            Log.info(.auth, "auth response keys: \(plist.keys.sorted().joined(separator: ","))")
 
             let failureType = plist["failureType"] as? String
             let customerMessage = plist["customerMessage"] as? String
@@ -173,18 +197,18 @@ public final class AuthenticationService: AuthenticationServicing, @unchecked Se
         return digits.count == 6 ? digits : nil
     }
 
+    /// Form-urlencoded body matching the documented desktop-client flow
+    /// (ipatool): appleId, password (+2FA appended), guid, attempt, rmp, why.
     static func authRequestBody(appleID: String, password: String, guid: String, attempt: Int) throws -> Data {
-        let inner: [String: Any] = [
-            "appleId": appleID,
-            "attempt": String(attempt),
-            "guid": guid,
-            "password": password,
-            "rmp": "0",
-            "why": "signIn",
-        ]
-        let plist = try PropertyListSerialization.data(fromPropertyList: inner, format: .xml, options: 0)
         var components = URLComponents()
-        components.queryItems = [URLQueryItem(name: "plist", value: String(data: plist, encoding: .utf8) ?? "")]
+        components.queryItems = [
+            URLQueryItem(name: "appleId", value: appleID),
+            URLQueryItem(name: "attempt", value: String(attempt)),
+            URLQueryItem(name: "guid", value: guid),
+            URLQueryItem(name: "password", value: password),
+            URLQueryItem(name: "rmp", value: "0"),
+            URLQueryItem(name: "why", value: "signIn"),
+        ]
         return Data((components.percentEncodedQuery ?? "").utf8)
     }
 

@@ -85,7 +85,30 @@ struct ITunesAppResult: Decodable {
     let artworkUrl100: String?
     let version: String?
     let price: Double?
-    let fileSizeBytes: String?
+    let fileSizeBytesRaw: String?
+
+    enum CodingKeys: String, CodingKey {
+        case trackId, bundleId, trackName, artistName, artworkUrl512, artworkUrl100, version, price, fileSizeBytes
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        trackId = try c.decode(Int64.self, forKey: .trackId)
+        bundleId = try c.decodeIfPresent(String.self, forKey: .bundleId)
+        trackName = try c.decodeIfPresent(String.self, forKey: .trackName)
+        artistName = try c.decodeIfPresent(String.self, forKey: .artistName)
+        artworkUrl512 = try c.decodeIfPresent(String.self, forKey: .artworkUrl512)
+        artworkUrl100 = try c.decodeIfPresent(String.self, forKey: .artworkUrl100)
+        version = try c.decodeIfPresent(String.self, forKey: .version)
+        price = try c.decodeIfPresent(Double.self, forKey: .price)
+        if let s = try c.decodeIfPresent(String.self, forKey: .fileSizeBytes) {
+            fileSizeBytesRaw = s
+        } else if let n = try c.decodeIfPresent(Int64.self, forKey: .fileSizeBytes) {
+            fileSizeBytesRaw = String(n)
+        } else {
+            fileSizeBytesRaw = nil
+        }
+    }
 
     var asAppStoreApp: AppStoreApp? {
         guard let bundleId, let trackName else { return nil }
@@ -97,7 +120,7 @@ struct ITunesAppResult: Decodable {
             iconURL: (artworkUrl512 ?? artworkUrl100).flatMap { URL(string: $0) },
             currentVersion: version,
             price: price,
-            fileSizeBytes: fileSizeBytes.flatMap { Int64($0) }
+            fileSizeBytes: fileSizeBytesRaw.flatMap { Int64($0) }
         )
     }
 }

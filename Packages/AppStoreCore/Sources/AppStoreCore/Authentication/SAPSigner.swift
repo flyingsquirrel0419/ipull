@@ -63,6 +63,7 @@ public actor SAPSigner: SAPSigning {
         let guid = hardwareID.map { String(format: "%02X", $0) }.joined()
         let bag = try await bagProvider.bag(guid: guid)
 
+        Log.info(.auth, "SAP setup: cert endpoint present=\(bag.sapSetupCertEndpoint != nil), setup endpoint present=\(bag.sapSetupEndpoint != nil)")
         guard let certURL = bag.sapSetupCertEndpoint, let setupURL = bag.sapSetupEndpoint else {
             throw AppStoreError.unknown("Bag does not contain SAP setup endpoints")
         }
@@ -76,8 +77,10 @@ public actor SAPSigner: SAPSigning {
               let certPlist = try? PropertyListSerialization.propertyList(from: certResponse.data, format: nil) as? [String: Any],
               let certificate = certPlist["sign-sap-setup-cert"] as? Data
         else {
+            Log.error(.auth, "SAP cert fetch failed (HTTP \(certResponse.statusCode))")
             throw AppStoreError.unknown("Failed to fetch SAP setup certificate")
         }
+        Log.info(.auth, "SAP cert fetched")
 
         // 2. Setup exchange: POST { sign-sap-setup-buffer: <client hello> }.
         let clientHello = makeClientHello(certificate: certificate)
@@ -93,8 +96,10 @@ public actor SAPSigner: SAPSigning {
               let setupPlist = try? PropertyListSerialization.propertyList(from: setupResponse.data, format: nil) as? [String: Any],
               let serverBuffer = setupPlist["sign-sap-setup-buffer"] as? Data
         else {
+            Log.error(.auth, "SAP setup exchange failed (HTTP \(setupResponse.statusCode))")
             throw AppStoreError.unknown("SAP setup exchange failed")
         }
+        Log.info(.auth, "SAP setup exchange OK")
 
         return deriveSessionKey(serverBuffer: serverBuffer, certificate: certificate)
     }

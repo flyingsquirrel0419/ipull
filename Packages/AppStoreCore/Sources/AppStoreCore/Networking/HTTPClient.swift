@@ -47,6 +47,9 @@ public final class URLSessionHTTPClient: HTTPClient, @unchecked Sendable {
         #if canImport(FoundationNetworking) || canImport(Darwin)
         var urlRequest = URLRequest(url: request.url)
         urlRequest.httpMethod = request.method
+        urlRequest.setValue(
+            "Configurator/2.17 (Macintosh; OS X 15.2; 24C5089c) AppleWebKit/0620.1.16.11.6",
+            forHTTPHeaderField: "User-Agent")
         for (key, value) in request.headers {
             urlRequest.setValue(value, forHTTPHeaderField: key)
         }

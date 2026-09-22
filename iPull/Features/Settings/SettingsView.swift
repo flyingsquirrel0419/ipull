@@ -22,8 +22,18 @@ struct SettingsView: View {
                     }
                 }
 
+                Section("Diagnostics") {
+                    if let logURL = Log.logFileURL {
+                        ShareLink(item: logURL) {
+                            Label("Share Debug Log", systemImage: "doc.text")
+                        }
+                        Text("Logs are redacted: no passwords, tokens, or DSIDs are written.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+
                 Section("About") {
-                    LabeledContent("Version", value: "0.1.0")
+                    LabeledContent("Version", value: "0.1.1")
                     Link("Privacy", destination: URL(string: "https://example.invalid/ipull/privacy")!)
                 }
 

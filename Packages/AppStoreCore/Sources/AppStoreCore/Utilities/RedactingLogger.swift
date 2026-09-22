@@ -54,5 +54,36 @@ public enum Log {
         #else
         print("[\(category.rawValue)] \(safe)")
         #endif
+        #if canImport(Darwin)
+        appendToLogFile(category, safe)
+        #endif
     }
+
+    #if canImport(Darwin)
+    /// On-device log file users can open from Files (On My iPhone → iPull)
+    /// and attach to bug reports. Redacted before writing; capped at ~256 KB.
+    public static var logFileURL: URL? {
+        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)
+            .first?.appendingPathComponent("ipull-debug.log")
+    }
+
+    private static func appendToLogFile(_ category: Category, _ message: String) {
+        guard let url = logFileURL else { return }
+        let line = "\(ISO8601DateFormatter().string(from: Date())) [\(category.rawValue)] \(message)\n"
+        if let handle = try? FileHandle(forWritingTo: url) {
+            if (try? handle.seekToEnd()) ?? 0 > 256 * 1024 {
+                try? handle.truncate(atOffset: 0)
+            }
+            handle.seekToEndOfFile()
+            handle.write(Data(line.utf8))
+            try? handle.close()
+        } else {
+            try? Data(line.utf8).write(to: url)
+        }
+    }
+
+    public static func clearLogFile() {
+        if let url = logFileURL { try? FileManager.default.removeItem(at: url) }
+    }
+    #endif
 }
