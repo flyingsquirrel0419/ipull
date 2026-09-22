@@ -55,13 +55,34 @@ public actor BagService: BagProviding {
         return bag
     }
 
+    /// bag.xml is an XML envelope: <Document><Protocol><plist>…</plist></Protocol></Document>.
+    /// Extract the inner plist before handing it to PropertyListSerialization —
+    /// parsing the raw document fails with NSCocoaError (observed on-device as
+    /// a bare __NSCFError during "bag fetch").
+    static func extractPlist(from data: Data) throws -> Data {
+        // Fast path: data already is a plist.
+        if (try? PropertyListSerialization.propertyList(from: data, format: nil)) != nil {
+            return data
+        }
+        guard let text = String(data: data, encoding: .utf8),
+              let start = text.range(of: "<plist"),
+              let end = text.range(of: "</plist>")
+        else { throw AppStoreError.unknown("Malformed bag response") }
+        let inner = String(text[start.lowerBound..<end.upperBound])
+        guard let plistData = inner.data(using: .utf8),
+              (try? PropertyListSerialization.propertyList(from: plistData, format: nil)) != nil
+        else { throw AppStoreError.unknown("Malformed bag response") }
+        return plistData
+    }
+
     nonisolated static func parse(data: Data) throws -> Bag {
         // The interesting keys live under "urlBag" when the request carries
         // the Configurator user agent; some responses place them at the top
         // level, and current bag.xml omits them entirely without specific
         // client headers. Check both levels, then fall back to the
         // documented default hosts — always validated below.
-        guard let root = try PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any]
+        let plistData = try extractPlist(from: data)
+        guard let root = try PropertyListSerialization.propertyList(from: plistData, format: nil) as? [String: Any]
         else { throw AppStoreError.unknown("Malformed bag response") }
 
         let urlBag = (root["urlBag"] as? [String: Any]) ?? root
