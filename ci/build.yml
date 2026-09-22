@@ -26,7 +26,7 @@ jobs:
         run: brew install xcodegen
 
       - name: Generate Xcode project
-        run: xcodegen
+        run: CI_BUILD_NUMBER=${{ github.run_number }} xcodegen
 
       - name: Build iPull (unsigned, for simulator)
         run: |
@@ -35,7 +35,8 @@ jobs:
             -scheme iPull \
             -destination 'generic/platform=iOS Simulator' \
             CODE_SIGNING_ALLOWED=NO \
-            ONLY_ACTIVE_ARCH=NO
+            ONLY_ACTIVE_ARCH=NO \
+            CURRENT_PROJECT_VERSION=${{ github.run_number }}
 
   app-archive:
     name: Archive unsigned IPA artifact
@@ -49,7 +50,7 @@ jobs:
         run: brew install xcodegen
 
       - name: Generate Xcode project
-        run: xcodegen
+        run: CI_BUILD_NUMBER=${{ github.run_number }} xcodegen
 
       - name: Build for device (unsigned)
         run: |
@@ -60,6 +61,7 @@ jobs:
             -configuration Release \
             CODE_SIGNING_ALLOWED=NO \
             ONLY_ACTIVE_ARCH=NO \
+            CURRENT_PROJECT_VERSION=${{ github.run_number }} \
             -derivedDataPath build
 
       - name: Package unsigned IPA

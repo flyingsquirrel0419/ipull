@@ -33,7 +33,12 @@ struct SettingsView: View {
                 }
 
                 Section("About") {
-                    LabeledContent("Version", value: "0.1.1")
+                    LabeledContent("Version") {
+                        Text(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?")
+                    }
+                    LabeledContent("Build") {
+                        Text(Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "?")
+                    }
                     Link("Privacy", destination: URL(string: "https://example.invalid/ipull/privacy")!)
                 }
 
