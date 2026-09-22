@@ -25,20 +25,24 @@ final class ShareViewController: UIViewController {
         for provider in attachments {
             if provider.hasItemConformingToTypeIdentifier(UTType.url.identifier) {
                 provider.loadItem(forTypeIdentifier: UTType.url.identifier) { [weak self] value, _ in
-                    if let url = value as? URL {
-                        self?.storeAndOpen(url.absoluteString)
-                    } else {
-                        self?.complete()
+                    DispatchQueue.main.async {
+                        if let url = value as? URL {
+                            self?.storeAndOpen(url.absoluteString)
+                        } else {
+                            self?.complete()
+                        }
                     }
                 }
                 return
             }
             if provider.hasItemConformingToTypeIdentifier(UTType.plainText.identifier) {
                 provider.loadItem(forTypeIdentifier: UTType.plainText.identifier) { [weak self] value, _ in
-                    if let text = value as? String {
-                        self?.storeAndOpen(text)
-                    } else {
-                        self?.complete()
+                    DispatchQueue.main.async {
+                        if let text = value as? String {
+                            self?.storeAndOpen(text)
+                        } else {
+                            self?.complete()
+                        }
                     }
                 }
                 return
