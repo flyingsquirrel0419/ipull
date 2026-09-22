@@ -61,13 +61,22 @@ never persisted; the session token lives in the iOS Keychain with
 
 ### From CI artifact (no Mac required)
 
-Every push to `main` builds an **unsigned** `iPull-unsigned.ipa` on
-GitHub Actions (macOS runner). Download it from the
+The repo ships a ready CI workflow at [ci/build.yml](ci/build.yml). To
+enable it, add it once via the GitHub web UI (workflow files under
+`.github/workflows/` require extra token scope, so some git clients can't
+push them):
+
+1. Open the repo on GitHub → **Add file** → **Create new file**.
+2. Name it `.github/workflows/build.yml` and paste the contents of
+   [ci/build.yml](ci/build.yml).
+3. Commit directly to `main`.
+
+From then on, every push to `main` builds an **unsigned**
+`iPull-unsigned.ipa` on a macOS runner. Download it from the
 [Actions](https://github.com/flyingsquirrel0419/ipull/actions) tab and
 install it with your preferred sideloading tool (AltStore, SideStore,
 Sideloadly, …). Sideloading re-signs the app with your own certificate —
 that step happens in the sideloading tool, not in iPull.
-
 ### Build from source (macOS + Xcode)
 
 Requires Xcode 15.4+ with the iOS 17 SDK.
