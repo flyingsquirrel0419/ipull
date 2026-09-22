@@ -25,9 +25,9 @@ final class ShareViewController: UIViewController {
         for provider in attachments {
             if provider.hasItemConformingToTypeIdentifier(UTType.url.identifier) {
                 provider.loadItem(forTypeIdentifier: UTType.url.identifier) { [weak self] value, _ in
-                    let safeValue = value as? any Sendable
+                    let captured = value.flatMap { $0 as? URL }
                     DispatchQueue.main.async {
-                        if let url = safeValue as? URL {
+                        if let url = captured {
                             self?.storeAndOpen(url.absoluteString)
                         } else {
                             self?.complete()
@@ -38,9 +38,9 @@ final class ShareViewController: UIViewController {
             }
             if provider.hasItemConformingToTypeIdentifier(UTType.plainText.identifier) {
                 provider.loadItem(forTypeIdentifier: UTType.plainText.identifier) { [weak self] value, _ in
-                    let safeValue = value as? any Sendable
+                    let captured = value.flatMap { $0 as? String }
                     DispatchQueue.main.async {
-                        if let text = safeValue as? String {
+                        if let text = captured {
                             self?.storeAndOpen(text)
                         } else {
                             self?.complete()
