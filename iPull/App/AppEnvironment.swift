@@ -53,13 +53,14 @@ public final class AppEnvironment: ObservableObject {
             context.insert(item)
             try? context.save()
 
-            Task.detached(priority: .utility) {
-                let hash = try? SHA256Streamer.hash(fileAt: fileURL)
-                await MainActor.run {
-                    let updateContext = ModelContext(modelContainer)
-                    item.sha256 = hash
-                    try? updateContext.save()
-                }
+            Task {
+                // Hash off the cooperative thread pool; mutate the model back
+                // on the main actor (ModelContext is main-actor bound).
+                let hash = await Task.detached(priority: .utility) {
+                    try? SHA256Streamer.hash(fileAt: fileURL)
+                }.value
+                item.sha256 = hash
+                try? context.save()
             }
         }
 
