@@ -23,7 +23,7 @@ struct SettingsView: View {
                 }
 
                 Section("About") {
-                    LabeledContent("Version", value: "1.0")
+                    LabeledContent("Version", value: "0.1.0")
                     Link("Privacy", destination: URL(string: "https://example.invalid/ipull/privacy")!)
                 }
 

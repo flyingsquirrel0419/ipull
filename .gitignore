@@ -7,3 +7,6 @@ build/
 *.xcodeproj
 !project.yml
 .swiftpm/
+
+# Local orchestration state (ruflo/claude-flow)
+.claude-flow/
