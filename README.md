@@ -77,6 +77,7 @@ From then on, every push to `main` builds an **unsigned**
 install it with your preferred sideloading tool (AltStore, SideStore,
 Sideloadly, …). Sideloading re-signs the app with your own certificate —
 that step happens in the sideloading tool, not in iPull.
+
 ### Build from source (macOS + Xcode)
 
 Requires Xcode 15.4+ with the iOS 17 SDK.
