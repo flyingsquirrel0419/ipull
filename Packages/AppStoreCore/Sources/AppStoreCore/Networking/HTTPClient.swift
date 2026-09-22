@@ -66,11 +66,19 @@ public final class URLSessionHTTPClient: HTTPClient, @unchecked Sendable {
             }
             return HTTPResponse(statusCode: http.statusCode, headers: headers, data: data)
         } catch let error as URLError {
+            // Surface the real URLError code in the (redacted) debug log so
+            // on-device failures are diagnosable; user-facing text stays generic.
+            Log.error(.network, "request failed: URLError \(error.code.rawValue) \(error.code)")
             switch error.code {
-            case .notConnectedToInternet, .networkConnectionLost, .dataNotAllowed:
+            case .notConnectedToInternet, .networkConnectionLost, .dataNotAllowed,
+                 .timedOut, .cannotFindHost, .cannotConnectToHost, .dnsLookupFailed:
                 throw AppStoreError.networkUnavailable
+            case .secureConnectionFailed, .serverCertificateHasBadDate,
+                 .serverCertificateUntrusted, .serverCertificateNotYetValid,
+                 .clientCertificateRejected, .appTransportSecurityRequiresSecureConnection:
+                throw AppStoreError.unknown("TLS failure \(error.code.rawValue)")
             default:
-                throw AppStoreError.downloadFailed(error.localizedDescription)
+                throw AppStoreError.unknown("HTTP failure \(error.code.rawValue)")
             }
         }
         #else

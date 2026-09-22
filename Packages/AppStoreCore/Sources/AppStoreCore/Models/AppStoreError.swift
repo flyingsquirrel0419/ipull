@@ -83,6 +83,12 @@ extension AppStoreError: LocalizedError {
         }
     }
 
+    /// Technical detail for the on-device debug log (never credentials).
+    public var debugDetail: String? {
+        if case .unknown(let detail) = self { return detail }
+        return nil
+    }
+
     /// Whether re-authentication would resolve this error.
     public var requiresReauthentication: Bool {
         switch self {
