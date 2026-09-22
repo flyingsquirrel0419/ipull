@@ -220,7 +220,7 @@ extension DownloadManager: URLSessionDownloadDelegate {
         guard let error else { return } // success handled in didFinishDownloadingTo
         let nsError = error as NSError
         Task { @MainActor in
-            if let data = nsError.userInfo[NSURLSessionDownloadTaskResumeDataKey] as? Data {
+            if let data = nsError.userInfo["NSURLSessionDownloadTaskResumeData"] as? Data {
                 self.resumeData[id] = data
             }
             if (error as? URLError)?.code == .cancelled {

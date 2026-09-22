@@ -99,16 +99,16 @@ struct LibraryView: View {
 
     private func verifyHash(_ item: LibraryItem) {
         let url = environment.storage.absoluteURL(forRelative: item.relativeFilePath)
-        Task.detached(priority: .utility) {
-            let hash = try? SHA256Streamer.hash(fileAt: url)
-            await MainActor.run {
-                if let hash {
-                    item.sha256 = hash
-                    try? modelContext.save()
-                    errorMessage = "SHA-256 verified: \(hash.prefix(16))…"
-                } else {
-                    errorMessage = "Couldn't read the file."
-                }
+        Task {
+            let hash = await Task.detached(priority: .utility) {
+                try? SHA256Streamer.hash(fileAt: url)
+            }.value
+            if let hash {
+                item.sha256 = hash
+                try? modelContext.save()
+                errorMessage = "SHA-256 verified: \(hash.prefix(16))…"
+            } else {
+                errorMessage = "Couldn't read the file."
             }
         }
     }

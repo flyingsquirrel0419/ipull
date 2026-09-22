@@ -35,8 +35,9 @@ public final class AppEnvironment: ObservableObject {
         }()
         self.storage = storage
 
-        let context = ModelContext(container)
+        let modelContainer = container
         self.downloadManager = DownloadManager(storage: storage) { record, fileURL in
+            let context = ModelContext(modelContainer)
             // Register completed download in Library and compute SHA-256
             // off the main thread (streaming, chunked).
             let relative = storage.relativePath(forAbsolute: fileURL)
@@ -55,8 +56,9 @@ public final class AppEnvironment: ObservableObject {
             Task.detached(priority: .utility) {
                 let hash = try? SHA256Streamer.hash(fileAt: fileURL)
                 await MainActor.run {
+                    let updateContext = ModelContext(modelContainer)
                     item.sha256 = hash
-                    try? context.save()
+                    try? updateContext.save()
                 }
             }
         }
