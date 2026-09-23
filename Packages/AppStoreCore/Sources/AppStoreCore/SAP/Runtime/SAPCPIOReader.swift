@@ -24,6 +24,7 @@ public struct CPIOReader {
         var entries: [Entry] = []
         var cursor = 0
 
+        guard data.count >= headerSize else { throw Error.truncated }
         while cursor + headerSize <= data.count {
             let header = data.subdata(in: cursor..<(cursor + headerSize))
             guard header.prefix(6).elementsEqual(Data("070707".utf8)) else {
