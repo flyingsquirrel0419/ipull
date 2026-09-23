@@ -1,0 +1,4 @@
+module CUnicorn {
+    header "cunicorn.h"
+    export *
+}
