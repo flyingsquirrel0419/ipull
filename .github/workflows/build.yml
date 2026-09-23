@@ -42,11 +42,24 @@ jobs:
   app-build:
     name: Build app + share extension (simulator)
     runs-on: macos-15
+    needs: unicorn-ios
     steps:
       - uses: actions/checkout@v4
 
       - name: Install XcodeGen
         run: brew install xcodegen
+
+      - name: Download unicorn artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: unicorn-ios
+          path: build/unicorn
+
+      - name: Vendor unicorn for the package
+        run: |
+          mkdir -p Packages/AppStoreCore/Vendor/unicorn/lib Packages/AppStoreCore/Vendor/unicorn/include
+          cp build/unicorn/iphonesimulator/lib/libunicorn.a Packages/AppStoreCore/Vendor/unicorn/lib/
+          cp -R build/unicorn/iphonesimulator/include/unicorn Packages/AppStoreCore/Vendor/unicorn/include/
 
       - name: Generate Xcode project
         run: CI_BUILD_NUMBER=${{ github.run_number }} xcodegen
@@ -64,7 +77,7 @@ jobs:
   app-archive:
     name: Archive unsigned IPA artifact
     runs-on: macos-15
-    needs: [core-tests, app-build]
+    needs: [core-tests, app-build, unicorn-ios]
     if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/')
     steps:
       - uses: actions/checkout@v4
