@@ -11,6 +11,11 @@ public final class AppEnvironment: ObservableObject {
     public let downloadManager: DownloadManager
 
     @Published public var session: AppleAccountSession?
+    /// True while a sign-in or sign-out is in flight; drives UI progress.
+    @Published public private(set) var isAuthenticating = false
+    /// True after Apple answered "verification code required". While set the
+    /// caller must resubmit the same credentials with a code appended.
+    @Published public private(set) var needsTwoFactorCode = false
 
     public init() {
         let secrets = KeychainStore()
@@ -64,14 +69,76 @@ public final class AppEnvironment: ObservableObject {
             }
         }
 
-        // Restore session (token lives in the Keychain).
+        // Restore session (token lives in the Keychain). A corrupt blob
+        // fails to decode — treat that as signed out and drop it.
         Task { [client] in
-            self.session = try? await client.auth.restoreSession()
+            do {
+                let restored = try await client.auth.restoreSession()
+                if !self.isAuthenticating && self.session == nil {
+                    self.session = restored
+                }
+            } catch {
+                Log.error(.auth, "stored session unreadable; clearing it")
+                if !self.isAuthenticating && self.session == nil {
+                    try? await client.auth.signOut()
+                }
+            }
         }
     }
 
+    /// Sign in with credentials held only for the duration of this call.
+    /// The password is a local value, never a stored property, so it cannot
+    /// outlive the attempt, be observed by SwiftUI, or reach logs. On
+    /// .twoFactorRequired the caller keeps its own copy of the password and
+    /// calls this again with the six-digit code.
+    @discardableResult
+    public func signIn(email: String, password: String, twoFactorCode: String? = nil) async -> Result<AppleAccountSession, AppStoreError> {
+        isAuthenticating = true
+        defer { isAuthenticating = false }
+        do {
+            let result = try await client.auth.signIn(email: email, password: password, twoFactorCode: twoFactorCode)
+            switch result {
+            case .success(let session):
+                self.session = session
+                needsTwoFactorCode = false
+                return .success(session)
+            case .twoFactorRequired:
+                needsTwoFactorCode = true
+                return .failure(.twoFactorRequired)
+            }
+        } catch let error as AppStoreError {
+            if error.requiresReauthentication && error != .invalidTwoFactorCode {
+                // A dead token must not survive a failed sign-in.
+                try? await client.auth.signOut()
+                session = nil
+            }
+            if error != .invalidTwoFactorCode {
+                needsTwoFactorCode = false
+            }
+            return .failure(error)
+        } catch {
+            needsTwoFactorCode = false
+            return .failure(.unknown(String(describing: type(of: error))))
+        }
+    }
+
+    /// Abandon a pending two-factor prompt (user tapped "Use a different
+    /// account" or edited the email). No network call; just UI state.
+    public func cancelTwoFactor() {
+        needsTwoFactorCode = false
+    }
+
     public func signOut() async {
-        try? await client.auth.signOut()
+        isAuthenticating = true
+        defer { isAuthenticating = false }
+        do {
+            try await client.auth.signOut()
+        } catch {
+            // Keychain deletion failures leave a stale token behind; still
+            // drop the in-memory session so the app behaves signed out.
+            Log.error(.auth, "sign-out: token removal failed (\(String(describing: type(of: error))))")
+        }
         session = nil
+        needsTwoFactorCode = false
     }
 }

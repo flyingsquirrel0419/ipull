@@ -2,6 +2,18 @@
 
 All notable, user-visible changes are listed here. Dates are ISO 8601.
 
+## [0.3.0] - 2026-09-24
+
+### Changed
+
+- Reworked Apple Account sign-in and verification screens with clearer progress,
+  errors, privacy guidance, and account status.
+- Preserved credentials across the trusted-device code step so two-factor sign-in
+  can complete, then cleared them when the flow ends.
+- Added bounded retries for Apple's rate-limit responses and removed expired
+  session tokens from the Keychain.
+- Reduced authentication logging of response details and signing errors.
+
 ## [1.0.0] - 2026-09-23
 
 ### Added

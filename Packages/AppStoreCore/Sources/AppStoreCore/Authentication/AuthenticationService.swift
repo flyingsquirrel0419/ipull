@@ -10,6 +10,9 @@ public protocol SAPSigning: Sendable {
 
 public enum AuthenticationResult: Sendable, Equatable {
     case success(AppleAccountSession)
+    /// The account requires a six-digit trusted-device code before sign-in
+    /// can complete. The caller must ask for the code and call signIn
+    /// again with the same password plus the twoFactorCode argument.
     case twoFactorRequired
 }
 
@@ -24,6 +27,8 @@ public protocol AuthenticationServicing: Sendable {
 ///   bag → POST authenticateAccount (plist form body, SAP-signed)
 ///       → on MZFinance.BadLogin → require 2FA code, retry with code appended
 ///       → on 302 → follow pod redirect with attempt reset to 1
+///       → on 429 → bounded exponential backoff honoring Retry-After,
+///         then rethrow .rateLimited
 ///       → success: dsPersonId + passwordToken + X-Set-Apple-Store-Front
 ///
 /// Passwords are never persisted; only the resulting session token goes to
@@ -31,24 +36,34 @@ public protocol AuthenticationServicing: Sendable {
 public final class AuthenticationService: AuthenticationServicing, @unchecked Sendable {
     public static let sessionKeychainKey = "apple-account-session"
 
+    /// Bounds for 429 handling: bounded exponential backoff (1s, 2s, 4s)
+    /// honoring a server Retry-After hint, capped at 30s.
+    static let maxRateLimitRetries = 3
+    static let rateLimitMaxDelaySeconds: UInt64 = 30
+
     private let http: HTTPClient
     private let bagProvider: BagProviding
     private let signer: SAPSigning
     private let secrets: SecretStore
     private let guidProvider: @Sendable () throws -> String
+    private let sleep: @Sendable (UInt64) async -> Void
 
     public init(
         http: HTTPClient,
         bagProvider: BagProviding,
         signer: SAPSigning,
         secrets: SecretStore,
-        guidProvider: @escaping @Sendable () throws -> String
+        guidProvider: @escaping @Sendable () throws -> String,
+        sleep: (@Sendable (UInt64) async -> Void)? = nil
     ) {
         self.http = http
         self.bagProvider = bagProvider
         self.signer = signer
         self.secrets = secrets
         self.guidProvider = guidProvider
+        self.sleep = sleep ?? { ns in
+            try? await Task.sleep(nanoseconds: ns)
+        }
     }
 
     public func signIn(email: String, password: String, twoFactorCode: String?) async throws -> AuthenticationResult {
@@ -84,9 +99,10 @@ public final class AuthenticationService: AuthenticationServicing, @unchecked Se
         var endpoint = bag.authEndpoint
         var attempt = 1
         var redirectHop = false
+        var rateLimitRetries = 0
 
-        // Up to 4 attempts: first invalid-credentials retry, pod redirect, 2FA retry.
-        for _ in 0..<4 {
+        // Allow the normal retry and redirect in addition to rate-limit retries.
+        for _ in 0..<(4 + Self.maxRateLimitRetries) {
             let requestAttempt = redirectHop ? 1 : attempt
             let passwordField = password + (normalizedCode ?? "")
             let body = try Self.authRequestBody(
@@ -100,7 +116,10 @@ public final class AuthenticationService: AuthenticationServicing, @unchecked Se
                 signature = try await signer.sign(body: body)
                 Log.info(.auth, "SAP signature produced (attempt \(requestAttempt))")
             } catch {
-                Log.error(.auth, "SAP signing failed: \(String(describing: error))")
+                // Log only the error type: emulator errors may embed the
+                // signed body, which contains the password in percent-encoded
+                // form that pattern-based redaction cannot recognize.
+                Log.error(.auth, "SAP signing failed: \(String(describing: type(of: error)))")
                 throw error
             }
 
@@ -123,6 +142,18 @@ public final class AuthenticationService: AuthenticationServicing, @unchecked Se
 
             if response.statusCode == 429 {
                 let retryAfter = response.header("Retry-After").flatMap { Int($0) }
+                if rateLimitRetries < Self.maxRateLimitRetries {
+                    let backoff = UInt64(1) << rateLimitRetries
+                    let delay = min(
+                        max(UInt64(max(retryAfter ?? 0, 0)), backoff),
+                        Self.rateLimitMaxDelaySeconds
+                    )
+                    rateLimitRetries += 1
+                    Log.info(.auth, "authenticate rate limited; retry \(rateLimitRetries) after \(delay)s")
+                    await sleep(delay * 1_000_000_000)
+                    continue
+                }
+                Log.error(.auth, "authenticate still rate limited after \(rateLimitRetries) retries")
                 throw AppStoreError.rateLimited(retryAfterSeconds: retryAfter)
             }
 
@@ -139,7 +170,9 @@ public final class AuthenticationService: AuthenticationServicing, @unchecked Se
                 Log.error(.auth, "malformed auth response body (\(response.data.count) bytes)")
                 throw AppStoreError.unknown("Malformed authentication response")
             }
-            Log.info(.auth, "auth response keys: \(plist.keys.sorted().joined(separator: ","))")
+            // Branch on key presence only; the payload can carry account
+            // details that must not reach the log.
+            Log.info(.auth, "auth response received; failureType: \(plist["failureType"] != nil), customerMessage: \(plist["customerMessage"] != nil)")
 
             let failureType = plist["failureType"] as? String
             let customerMessage = plist["customerMessage"] as? String
@@ -172,6 +205,7 @@ public final class AuthenticationService: AuthenticationServicing, @unchecked Se
 
             if failureType == nil && customerMessage == "MZFinance.BadLogin.Configurator_message" {
                 if normalizedCode == nil {
+                    Log.info(.auth, "account requires two-factor code")
                     return .twoFactorRequired
                 }
                 throw AppStoreError.invalidTwoFactorCode
@@ -186,6 +220,10 @@ public final class AuthenticationService: AuthenticationServicing, @unchecked Se
             }
 
             if failureType == "2034" || failureType == "2042" {
+                // The stored token can no longer authenticate; remove it so
+                // restoreSession() fails cleanly instead of resurrecting a
+                // dead session.
+                try? secrets.delete(key: Self.sessionKeychainKey)
                 throw AppStoreError.sessionExpired
             }
 
@@ -196,7 +234,7 @@ public final class AuthenticationService: AuthenticationServicing, @unchecked Se
     }
 
     static func normalizeTwoFactorCode(_ raw: String) -> String? {
-        let digits = raw.filter { $0.isNumber }
+        let digits = raw.filter { $0 >= "0" && $0 <= "9" }
         return digits.count == 6 ? digits : nil
     }
 
@@ -229,5 +267,6 @@ public final class AuthenticationService: AuthenticationServicing, @unchecked Se
 
     public func signOut() async throws {
         try secrets.delete(key: Self.sessionKeychainKey)
+        Log.info(.auth, "signed out; session token removed")
     }
 }
