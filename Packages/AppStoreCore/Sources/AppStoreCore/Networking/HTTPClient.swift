@@ -40,6 +40,14 @@ public protocol HTTPClient: Sendable {
     func send(_ request: HTTPRequest, body: Data?) async throws -> HTTPResponse
 }
 
+/// Streaming variant for large downloads — writes the response body
+/// straight to a file instead of holding it in memory. Progress is
+/// reported as (bytesWritten, totalBytes-or-nil).
+public protocol StreamingHTTPClient: HTTPClient {
+    func download(_ request: HTTPRequest, to destination: URL,
+                  progress: (@Sendable (Int64, Int64?) -> Void)?) async throws -> HTTPResponse
+}
+
 public final class URLSessionHTTPClient: HTTPClient, @unchecked Sendable {
     public init() {}
 
@@ -86,3 +94,70 @@ public final class URLSessionHTTPClient: HTTPClient, @unchecked Sendable {
         #endif
     }
 }
+
+#if canImport(FoundationNetworking) || canImport(Darwin)
+extension URLSessionHTTPClient: StreamingHTTPClient {
+    public func download(_ request: HTTPRequest, to destination: URL,
+                         progress: (@Sendable (Int64, Int64?) -> Void)?) async throws -> HTTPResponse {
+        var urlRequest = URLRequest(url: request.url)
+        urlRequest.httpMethod = request.method
+        urlRequest.setValue(
+            "Configurator/2.17 (Macintosh; OS X 15.2; 24C5089c) AppleWebKit/0620.1.16.11.6",
+            forHTTPHeaderField: "User-Agent")
+        for (key, value) in request.headers {
+            urlRequest.setValue(value, forHTTPHeaderField: key)
+        }
+
+        let delegate = DownloadDelegate(destination: destination, progress: progress)
+        let session = URLSession(configuration: .default, delegate: delegate, delegateQueue: nil)
+        defer { session.invalidateAndCancel() }
+
+        do {
+            let (tempURL, response) = try await session.download(for: urlRequest, delegate: delegate)
+            guard let http = response as? HTTPURLResponse else {
+                throw AppStoreError.unknown("Non-HTTP response")
+            }
+            var headers: [String: String] = [:]
+            for (key, value) in http.allHeaderFields {
+                headers[String(describing: key)] = String(describing: value)
+            }
+            // Move atomically to the final destination.
+            if FileManager.default.fileExists(atPath: destination.path) {
+                try? FileManager.default.removeItem(at: destination)
+            }
+            try FileManager.default.moveItem(at: tempURL, to: destination)
+            return HTTPResponse(statusCode: http.statusCode, headers: headers, data: Data())
+        } catch let error as URLError {
+            Log.error(.network, "download failed: URLError \(error.code.rawValue) \(error.code)")
+            switch error.code {
+            case .notConnectedToInternet, .networkConnectionLost, .dataNotAllowed,
+                 .timedOut, .cannotFindHost, .cannotConnectToHost, .dnsLookupFailed:
+                throw AppStoreError.networkUnavailable
+            default:
+                throw AppStoreError.unknown("HTTP failure \(error.code.rawValue)")
+            }
+        }
+    }
+}
+
+private final class DownloadDelegate: NSObject, URLSessionDownloadDelegate {
+    let destination: URL
+    let progress: (@Sendable (Int64, Int64?) -> Void)?
+
+    init(destination: URL, progress: (@Sendable (Int64, Int64?) -> Void)?) {
+        self.destination = destination
+        self.progress = progress
+    }
+
+    func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask,
+                    didWriteData bytesWritten: Int64, totalBytesWritten: Int64,
+                    totalBytesExpectedToWrite: Int64) {
+        progress?(totalBytesWritten, totalBytesExpectedToWrite > 0 ? totalBytesExpectedToWrite : nil)
+    }
+
+    func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask,
+                    didFinishDownloadingTo location: URL) {
+        // Handled by the await in download(); nothing here.
+    }
+}
+#endif

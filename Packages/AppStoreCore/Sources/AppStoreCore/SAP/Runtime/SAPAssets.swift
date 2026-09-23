@@ -129,14 +129,27 @@ public final class SAPAssets: SAPAssetProviding, @unchecked Sendable {
             .appendingPathComponent("ipull-sap-\(UUID().uuidString).pkg")
         defer { try? FileManager.default.removeItem(at: tempURL) }
 
-        let response = try await http.send(
-            HTTPRequest(url: Self.updateURL, headers: ["User-Agent": "iPull/1.0"]),
-            body: nil
-        )
-        guard response.statusCode == 200 else {
-            throw SAPAssetsError.downloadFailed("HTTP \(response.statusCode)")
+        let request = HTTPRequest(url: Self.updateURL, headers: ["User-Agent": "iPull/1.0"])
+        if let streaming = http as? StreamingHTTPClient {
+            // Stream the ~1.2 GB package straight to disk with progress logs.
+            let response = try await streaming.download(request, to: tempURL) { written, total in
+                let writtenMB = written / 1_048_576
+                if let total {
+                    Log.info(.auth, "SAP assets: \(writtenMB) MB / \(total / 1_048_576) MB")
+                } else {
+                    Log.info(.auth, "SAP assets: \(writtenMB) MB")
+                }
+            }
+            guard response.statusCode == 200 else {
+                throw SAPAssetsError.downloadFailed("HTTP \(response.statusCode)")
+            }
+        } else {
+            let response = try await http.send(request, body: nil)
+            guard response.statusCode == 200 else {
+                throw SAPAssetsError.downloadFailed("HTTP \(response.statusCode)")
+            }
+            try response.data.write(to: tempURL, options: .atomic)
         }
-        try response.data.write(to: tempURL, options: .atomic)
         let package = try Data(contentsOf: tempURL, options: .mappedIfSafe)
 
         let xar = try XARReader(data: package)
