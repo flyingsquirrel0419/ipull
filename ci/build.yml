@@ -73,6 +73,7 @@ jobs:
             -destination 'generic/platform=iOS Simulator' \
             CODE_SIGNING_ALLOWED=NO \
             ONLY_ACTIVE_ARCH=YES \
+            ARCHS=arm64 \
             CURRENT_PROJECT_VERSION=${{ github.run_number }}
 
   app-archive:
