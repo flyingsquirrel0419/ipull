@@ -38,7 +38,6 @@ jobs:
         run: |
           mkdir -p Packages/AppStoreCore/Vendor/unicorn/lib Packages/AppStoreCore/Vendor/unicorn/include
           cp build/unicorn/macos/lib/libunicorn.a Packages/AppStoreCore/Vendor/unicorn/lib/
-          cp -R build/unicorn/macos/include/unicorn Packages/AppStoreCore/Vendor/unicorn/include/
       - name: Run core package tests
         run: swift test --package-path Packages/AppStoreCore
 
@@ -62,7 +61,6 @@ jobs:
         run: |
           mkdir -p Packages/AppStoreCore/Vendor/unicorn/lib Packages/AppStoreCore/Vendor/unicorn/include
           cp build/unicorn/iphonesimulator/lib/libunicorn.a Packages/AppStoreCore/Vendor/unicorn/lib/
-          cp -R build/unicorn/iphonesimulator/include/unicorn Packages/AppStoreCore/Vendor/unicorn/include/
 
       - name: Generate Xcode project
         run: CI_BUILD_NUMBER=${{ github.run_number }} xcodegen
