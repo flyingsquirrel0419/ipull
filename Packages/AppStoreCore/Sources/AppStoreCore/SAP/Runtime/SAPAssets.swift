@@ -131,16 +131,32 @@ public final class SAPAssets: SAPAssetProviding, @unchecked Sendable {
 
         // Retry with resume: swcdn supports Range. A lost connection
         // (URLError -1005, common on 1.2 GB downloads) picks up where it left off.
+        let partialURL = tempURL
         var lastError: Error?
         for attempt in 1...3 {
             var request = HTTPRequest(url: Self.updateURL, headers: ["User-Agent": "iPull/1.0"])
-            if let existing = try? FileManager.default.attributesOfItem(atPath: tempURL.path),
+            if let existing = try? FileManager.default.attributesOfItem(atPath: partialURL.path),
                let size = existing[.size] as? Int64, size > 0 {
                 request.headers["Range"] = "bytes=\(size)-"
                 Log.info(.auth, "resuming SAP asset download from \(size / 1_048_576) MB (attempt \(attempt))")
             }
+            // Each attempt streams into its own scratch file; on success we
+            // append it onto the shared partial so a retry resumes correctly.
+            let attemptURL = FileManager.default.temporaryDirectory
+                .appendingPathComponent("ipull-sap-attempt-\(UUID().uuidString).pkg")
+            defer { try? FileManager.default.removeItem(at: attemptURL) }
             do {
-                try await performDownload(request: request, to: tempURL)
+                try await performDownload(request: request, to: attemptURL)
+                if request.headers["Range"] != nil,
+                   FileManager.default.fileExists(atPath: partialURL.path),
+                   let existing = try? Data(contentsOf: partialURL, options: .mappedIfSafe),
+                   let fresh = try? Data(contentsOf: attemptURL) {
+                    var combined = existing
+                    combined.append(fresh)
+                    try combined.write(to: partialURL, options: .atomic)
+                } else if !FileManager.default.fileExists(atPath: partialURL.path) {
+                    try FileManager.default.moveItem(at: attemptURL, to: partialURL)
+                }
                 lastError = nil
                 break
             } catch {
@@ -149,7 +165,7 @@ public final class SAPAssets: SAPAssetProviding, @unchecked Sendable {
             }
         }
         if let lastError { throw lastError }
-        let package = try Data(contentsOf: tempURL, options: .mappedIfSafe)
+        let package = try Data(contentsOf: partialURL, options: .mappedIfSafe)
 
         let xar = try XARReader(data: package)
         // The pinned package keeps the files in the "Scripts" member, which is a
