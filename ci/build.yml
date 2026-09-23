@@ -34,12 +34,14 @@ jobs:
         with:
           name: unicorn-ios
           path: build/unicorn
-      - name: Vendor unicorn (simulator)
+      - name: Vendor unicorn (macOS host, for tests)
         run: |
           mkdir -p Packages/AppStoreCore/Vendor/unicorn/lib
-          cp build/unicorn/iphonesimulator/lib/libunicorn.a Packages/AppStoreCore/Vendor/unicorn/lib/
-      - name: Run package tests on macOS (host arch matches simulator target)
+          cp build/unicorn/macos/lib/libunicorn.a Packages/AppStoreCore/Vendor/unicorn/lib/
+      - name: Run package tests on macOS
         run: swift test --package-path Packages/AppStoreCore
+      - name: Vendor unicorn (simulator, for the sim build)
+        run: cp build/unicorn/iphonesimulator/lib/libunicorn.a Packages/AppStoreCore/Vendor/unicorn/lib/libunicorn.a
       - name: Build package for iOS Simulator (arm64)
         run: |
           xcodebuild build \
