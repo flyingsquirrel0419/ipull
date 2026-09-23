@@ -12,12 +12,15 @@ import Foundation
 ///   6. sign(body) per request → X-Apple-ActionSignature
 public actor EmulatedSAPSigner: SAPSigning {
 
-    public enum State: Sendable {
+    public enum State: Sendable, Equatable {
         case idle
         case establishing
         case ready
         case failed
     }
+
+    /// Current state for UI observation.
+    public var currentState: State { state }
 
     private let http: HTTPClient
     private let bagProvider: BagProviding
