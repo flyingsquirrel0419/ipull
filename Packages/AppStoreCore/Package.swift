@@ -8,7 +8,16 @@ let package = Package(
         .library(name: "AppStoreCore", targets: ["AppStoreCore"])
     ],
     targets: [
-        .target(name: "AppStoreCore"),
+        .target(name: "CZlib"),
+        .target(name: "CBzip2"),
+        .target(
+            name: "CUnicorn",
+            linkerSettings: [.unsafeFlags(["-L", "Vendor/unicorn/lib", "-L", "Packages/AppStoreCore/Vendor/unicorn/lib", "-lunicorn"])]
+        ),
+        .target(
+            name: "AppStoreCore",
+            dependencies: ["CZlib", "CBzip2", "CUnicorn"]
+        ),
         .testTarget(
             name: "AppStoreCoreTests",
             dependencies: ["AppStoreCore"]

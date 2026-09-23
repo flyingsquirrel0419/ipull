@@ -1,0 +1,5 @@
+module CBzip2 {
+    header "cbzip2.h"
+    link "bz2"
+    export *
+}

@@ -8,22 +8,59 @@ on:
   workflow_dispatch:
 
 jobs:
-  core-tests:
-    name: AppStoreCore unit tests
+  unicorn-ios:
+    name: Build libunicorn for iOS
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
+      - name: Build static libunicorn (arm64 device + simulator)
+        run: bash ci/unicorn-ios.sh
+      - name: Upload unicorn artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: unicorn-ios
+          path: |
+            build/unicorn/iphoneos/
+            build/unicorn/iphonesimulator/
+            build/unicorn/macos/
+  core-tests:
+    name: AppStoreCore unit tests
+    runs-on: macos-15
+    needs: unicorn-ios
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download unicorn artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: unicorn-ios
+          path: build/unicorn
+      - name: Vendor unicorn for the package
+        run: |
+          mkdir -p Packages/AppStoreCore/Vendor/unicorn/lib Packages/AppStoreCore/Vendor/unicorn/include
+          cp build/unicorn/macos/lib/libunicorn.a Packages/AppStoreCore/Vendor/unicorn/lib/
       - name: Run core package tests
         run: swift test --package-path Packages/AppStoreCore
 
   app-build:
     name: Build app + share extension (simulator)
     runs-on: macos-15
+    needs: unicorn-ios
     steps:
       - uses: actions/checkout@v4
 
       - name: Install XcodeGen
         run: brew install xcodegen
+
+      - name: Download unicorn artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: unicorn-ios
+          path: build/unicorn
+
+      - name: Vendor unicorn for the package
+        run: |
+          mkdir -p Packages/AppStoreCore/Vendor/unicorn/lib Packages/AppStoreCore/Vendor/unicorn/include
+          cp build/unicorn/iphonesimulator/lib/libunicorn.a Packages/AppStoreCore/Vendor/unicorn/lib/
 
       - name: Generate Xcode project
         run: CI_BUILD_NUMBER=${{ github.run_number }} xcodegen
@@ -35,13 +72,14 @@ jobs:
             -scheme iPull \
             -destination 'generic/platform=iOS Simulator' \
             CODE_SIGNING_ALLOWED=NO \
-            ONLY_ACTIVE_ARCH=NO \
+            ONLY_ACTIVE_ARCH=YES \
+            ARCHS=arm64 \
             CURRENT_PROJECT_VERSION=${{ github.run_number }}
 
   app-archive:
     name: Archive unsigned IPA artifact
     runs-on: macos-15
-    needs: [core-tests, app-build]
+    needs: [core-tests, app-build, unicorn-ios]
     if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/')
     steps:
       - uses: actions/checkout@v4
