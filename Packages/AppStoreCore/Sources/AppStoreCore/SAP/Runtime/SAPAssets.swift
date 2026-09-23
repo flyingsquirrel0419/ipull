@@ -22,7 +22,6 @@ public struct SAPAssetBundle: Sendable {
 public enum SAPAssetsError: Error, Equatable {
     case downloadFailed(String)
     case digestMismatch(String)
-    case archiveLayoutUnsupported(String)
     case missingFile(String)
 }
 
@@ -31,8 +30,7 @@ public protocol SAPAssetProviding: Sendable {
 }
 
 /// Loads SAP assets from cache, or downloads them from Apple's update
-/// package with HTTP range reads (the package is >1 GB; we only read the
-/// XAR table of contents and the payload regions we need).
+/// package and extracts them from its bzip2-compressed CPIO Payload.
 public final class SAPAssets: SAPAssetProviding, @unchecked Sendable {
 
     struct FileSpec: Sendable {
@@ -46,6 +44,11 @@ public final class SAPAssets: SAPAssetProviding, @unchecked Sendable {
     static let updateURL = URL(string:
         "https://swcdn.apple.com/content/downloads/27/34/041-98128-A_SYPWICN3KH/5dqkl4rqgbsr18yzy61yeie9g3cmjc5hiv/OSXUpd10.9.pkg"
     )!
+
+    /// Byte offset within the raw Payload stream where the bzip2 data
+    /// begins (documented in ipatool's assets.go; verified against the
+    /// real package header during research).
+    static let payloadBZOffset = 0x352F40D5
 
     static let requiredFiles: [FileSpec] = [
         FileSpec(name: "CommerceKit",
@@ -124,16 +127,61 @@ public final class SAPAssets: SAPAssetProviding, @unchecked Sendable {
         }
     }
 
-    // MARK: - Download
+    // MARK: - Download + extraction
 
-    /// Full package download + XAR/CPIO extraction. The package is large,
-    /// but on-device storage and Apple CDN throughput make a streamed full
-    /// download simpler and more reliable than chained range reads; the
-    /// stream is written to a temp file and never held in memory.
     private func download() async throws -> SAPAssetBundle {
-        throw SAPAssetsError.archiveLayoutUnsupported(
-            "XAR/CPIO extraction is implemented in SAPXARReader; wire it here"
+        let tempURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ipull-sap-\(UUID().uuidString).pkg")
+        defer { try? FileManager.default.removeItem(at: tempURL) }
+
+        let response = try await http.send(
+            HTTPRequest(url: Self.updateURL, headers: ["User-Agent": "iPull/1.0"]),
+            body: nil
         )
+        guard response.statusCode == 200 else {
+            throw SAPAssetsError.downloadFailed("HTTP \(response.statusCode)")
+        }
+        try response.data.write(to: tempURL, options: .atomic)
+        let package = try Data(contentsOf: tempURL, options: .mappedIfSafe)
+
+        let xar = try XARReader(data: package)
+        guard let payloadEntry = xar.entry(named: "Payload"),
+              let payloadRaw = xar.bytes(of: payloadEntry, in: package)
+        else {
+            throw SAPAssetsError.missingFile("Payload")
+        }
+
+        // The bzip2 stream starts at payloadBZOffset inside the raw payload;
+        // bzlib needs the "BZh" magic prepended.
+        guard payloadRaw.count > Self.payloadBZOffset else {
+            throw SAPAssetsError.missingFile("Payload (short)")
+        }
+        var bzipStream = Data("BZh9".utf8)
+        bzipStream.append(payloadRaw.subdata(in: Self.payloadBZOffset..<payloadRaw.count))
+
+        // CPIO payload is large; decompress into a generously sized buffer.
+        let cpioData = try Bzip2.decompress(bzipStream, expectedSize: 1_600_000_000)
+        let entries = try CPIOReader.entries(in: cpioData)
+
+        var found: [String: Data] = [:]
+        for spec in Self.requiredFiles {
+            guard let entry = entries.first(where: { $0.name == spec.path }) else {
+                throw SAPAssetsError.missingFile(spec.name)
+            }
+            guard entry.body.count == spec.size else {
+                throw SAPAssetsError.digestMismatch(spec.name)
+            }
+            found[spec.name] = entry.body
+        }
+
+        let bundle = SAPAssetBundle(
+            commerceKit: found["CommerceKit"]!,
+            commerceCore: found["CommerceCore"]!,
+            coreFP: found["CoreFP"]!,
+            coreFPICXS: found["CoreFP.icxs"]!
+        )
+        try Self.verify(bundle)
+        return bundle
     }
 
     static func verify(_ bundle: SAPAssetBundle) throws {

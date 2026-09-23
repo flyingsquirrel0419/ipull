@@ -9,6 +9,7 @@ let package = Package(
     ],
     targets: [
         .target(name: "CZlib"),
+        .target(name: "CBzip2"),
         .target(
             name: "CUnicorn",
             cSettings: [.unsafeFlags(["-I/tmp/unicorn-src/include"])],
@@ -16,7 +17,7 @@ let package = Package(
         ),
         .target(
             name: "AppStoreCore",
-            dependencies: ["CZlib", "CUnicorn"]
+            dependencies: ["CZlib", "CBzip2", "CUnicorn"]
         ),
         .testTarget(
             name: "AppStoreCoreTests",

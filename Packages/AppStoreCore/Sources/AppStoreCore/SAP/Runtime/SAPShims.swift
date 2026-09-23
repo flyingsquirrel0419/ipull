@@ -29,7 +29,7 @@ public final class SAPShims {
         let address: UInt64
     }
 
-    private let engine: UnicornEngine
+    let engine: UnicornEngine
     private var entriesByAddress: [UInt64: Entry] = [:]
     private var symbols: [String: UInt64] = [:]
     private var codeCursor: UInt64 = shimBase
@@ -38,7 +38,7 @@ public final class SAPShims {
 
     /// Monotonic fake-handle counter for opaque object references returned
     /// to the guest (CF objects, IO iterators, …).
-    private var fakeHandle: UInt64 = 0xF0F0_0000_0000_0000
+    var fakeHandle: UInt64 = 0xF0F0_0000_0000_0000
 
     /// errno cell inside the guest address space.
     public private(set) var errnoAddress: UInt64 = 0
@@ -52,7 +52,7 @@ public final class SAPShims {
 
     // MARK: - Registration
 
-    private func register(names: [String], handler: @escaping Handler) throws {
+    func register(names: [String], handler: @escaping Handler) throws {
         let address = codeCursor
         // One-byte stub; the hook dispatches on the address before execute.
         try engine.write(address: address, data: Data([0xCC])) // int3
