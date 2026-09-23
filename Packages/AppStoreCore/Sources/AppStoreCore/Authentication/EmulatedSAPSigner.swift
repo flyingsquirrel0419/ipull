@@ -48,10 +48,12 @@ public actor EmulatedSAPSigner: SAPSigning {
         case .ready:
             return
         case .establishing:
-            // Callers serialize through the actor; if we re-enter here a
-            // previous attempt is still running — surface as retryable.
             throw AppStoreError.unknown("SAP session is being established; retry")
-        case .failed, .idle:
+        case .failed:
+            // A previous attempt failed (e.g. network during asset download);
+            // allow a clean retry instead of sticking in .failed.
+            Log.info(.auth, "retrying SAP session after previous failure")
+        case .idle:
             break
         }
 

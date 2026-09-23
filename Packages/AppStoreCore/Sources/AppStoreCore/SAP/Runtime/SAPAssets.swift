@@ -129,7 +129,13 @@ public final class SAPAssets: SAPAssetProviding, @unchecked Sendable {
             .appendingPathComponent("ipull-sap-\(UUID().uuidString).pkg")
         defer { try? FileManager.default.removeItem(at: tempURL) }
 
-        let request = HTTPRequest(url: Self.updateURL, headers: ["User-Agent": "iPull/1.0"])
+        var request = HTTPRequest(url: Self.updateURL, headers: ["User-Agent": "iPull/1.0"])
+        // Resume from a partial download when the CDN supports ranges.
+        if let existing = try? FileManager.default.attributesOfItem(atPath: tempURL.path),
+           let size = existing[.size] as? Int64, size > 0 {
+            request.headers["Range"] = "bytes=\(size)-"
+            Log.info(.auth, "resuming SAP asset download from \(size / 1_048_576) MB")
+        }
         if let streaming = http as? StreamingHTTPClient {
             // Stream the ~1.2 GB package straight to disk with progress logs.
             let response = try await streaming.download(request, to: tempURL) { written, total in
