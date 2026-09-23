@@ -100,7 +100,7 @@ public final class AuthenticationService: AuthenticationServicing, @unchecked Se
                 signature = try await signer.sign(body: body)
                 Log.info(.auth, "SAP signature produced (attempt \(requestAttempt))")
             } catch {
-                Log.error(.auth, "SAP signing failed: \(String(describing: type(of: error)))")
+                Log.error(.auth, "SAP signing failed: \(String(describing: error))")
                 throw error
             }
 
