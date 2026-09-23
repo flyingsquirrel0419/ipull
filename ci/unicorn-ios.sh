@@ -37,5 +37,13 @@ build_for() {
 build_for iphoneos "${PREFIX_DEVICE}"
 build_for iphonesimulator "${PREFIX_SIM}"
 
+# Host (macOS) build for running package tests on the runner.
+PREFIX_MACOS="${BUILD_DIR}/macos"
+cmake -S "${SRC_DIR}/unicorn-${UNICORN_VERSION}" -B "${BUILD_DIR}/macos"   -DUNICORN_BUILD_SHARED=OFF   -DUNICORN_ARCH=x86   -DCMAKE_BUILD_TYPE=Release
+cmake --build "${BUILD_DIR}/macos" -j"$(sysctl -n hw.ncpu)"
+mkdir -p "${PREFIX_MACOS}/lib" "${PREFIX_MACOS}/include"
+cp "${BUILD_DIR}/macos/libunicorn.a" "${PREFIX_MACOS}/lib/"
+cp -R "${SRC_DIR}/unicorn-${UNICORN_VERSION}/include/unicorn" "${PREFIX_MACOS}/include/"
+
 echo "Built:"
 ls -la "${PREFIX_DEVICE}/lib/libunicorn.a" "${PREFIX_SIM}/lib/libunicorn.a"
