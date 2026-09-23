@@ -30,6 +30,7 @@ public actor EmulatedSAPSigner: SAPSigning {
     private var runtime: SAPRuntime?
     private var context: UInt64 = 0
     private var state: State = .idle
+    private var inflight: Task<Void, Error>?
 
     public init(http: HTTPClient, bagProvider: BagProviding,
                 assetProvider: SAPAssetProviding, hardwareID: Data) {
@@ -51,21 +52,27 @@ public actor EmulatedSAPSigner: SAPSigning {
         case .ready:
             return
         case .establishing:
-            throw AppStoreError.unknown("SAP session is being established; retry")
+            // Coalesce: wait for the in-flight establish instead of erroring.
+            if let inflight {
+                try await inflight.value
+                return
+            }
         case .failed:
-            // A previous attempt failed (e.g. network during asset download);
-            // allow a clean retry instead of sticking in .failed.
             Log.info(.auth, "retrying SAP session after previous failure")
         case .idle:
             break
         }
 
         state = .establishing
+        let task = Task { try await self.establish() }
+        inflight = task
         do {
-            try await establish()
+            try await task.value
             state = .ready
+            inflight = nil
         } catch {
             state = .failed
+            inflight = nil
             throw error
         }
     }
