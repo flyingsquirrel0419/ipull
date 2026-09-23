@@ -8,6 +8,18 @@ on:
   workflow_dispatch:
 
 jobs:
+  unicorn-ios:
+    name: Build libunicorn for iOS
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build static libunicorn (arm64 device + simulator)
+        run: bash ci/unicorn-ios.sh
+      - name: Upload unicorn artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: unicorn-ios
+          path: build/unicorn/*/lib/libunicorn.a
   core-tests:
     name: AppStoreCore unit tests
     runs-on: macos-15
