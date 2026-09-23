@@ -47,10 +47,17 @@ int  cu_emu_stop(cu_engine engine);
 
 /// Code hook: invoked for every instruction in [begin, end].
 typedef void (*cu_code_hook_fn)(uint64_t address, uint32_t size, void *user_data);
+
+/// Invalid-memory hook: invoked on unmapped read/write/execute. Return
+/// non-zero to continue (handled), zero to stop.
+typedef int (*cu_invalid_mem_hook_fn)(uint64_t address, uint32_t size, int type, void *user_data);
 int  cu_hook_add_code(cu_engine engine, cu_code_hook_fn callback,
                       uint64_t begin, uint64_t end, void *user_data,
                       uint64_t *out_hook_id);
 int  cu_hook_del(cu_engine engine, uint64_t hook_id);
+
+int  cu_hook_add_invalid_mem(cu_engine engine, cu_invalid_mem_hook_fn callback,
+                             void *user_data, uint64_t *out_hook_id);
 
 const char *cu_strerror(int code);
 

@@ -97,6 +97,7 @@ public struct MachOFile {
 
         var symtab: (symoff: UInt32, nsyms: UInt32, stroff: UInt32)?
         var dyldInfo: (rebaseOff: UInt32, rebaseSize: UInt32, bindOff: UInt32, bindSize: UInt32,
+                       weakBindOff: UInt32, weakBindSize: UInt32,
                        lazyBindOff: UInt32, lazyBindSize: UInt32)?
 
         var cursor = 32
@@ -124,7 +125,8 @@ public struct MachOFile {
             case Self.LC_DYLD_INFO, Self.LC_DYLD_INFO_ONLY:
                 dyldInfo = (Self.readLE32(sliced, at: cursor + 8), Self.readLE32(sliced, at: cursor + 12),
                             Self.readLE32(sliced, at: cursor + 16), Self.readLE32(sliced, at: cursor + 20),
-                            Self.readLE32(sliced, at: cursor + 24), Self.readLE32(sliced, at: cursor + 28))
+                            Self.readLE32(sliced, at: cursor + 24), Self.readLE32(sliced, at: cursor + 28),
+                            Self.readLE32(sliced, at: cursor + 32), Self.readLE32(sliced, at: cursor + 36))
             default:
                 break
             }
@@ -156,7 +158,7 @@ public struct MachOFile {
             binds = parseBinds(
                 sliced, offset: Int(info.bindOff), size: Int(info.bindSize))
             binds += parseBinds(
-                sliced, offset: Int(info.lazyBindOff), size: Int(info.lazyBindSize))
+                sliced, offset: Int(info.lazyBindOff), size: Int(info.lazyBindSize), isLazy: true)
         }
     }
 
@@ -190,11 +192,11 @@ public struct MachOFile {
     private func parseRebases(_ data: Data, offset: Int, size: Int) -> [Rebase] {
         parseFixupStream(data, offset: offset, size: size, kind: .rebase).compactMap { $0 as? Rebase }
     }
-    private func parseBinds(_ data: Data, offset: Int, size: Int) -> [Bind] {
-        parseFixupStream(data, offset: offset, size: size, kind: .bind).compactMap { $0 as? Bind }
+    private func parseBinds(_ data: Data, offset: Int, size: Int, isLazy: Bool = false) -> [Bind] {
+        parseFixupStream(data, offset: offset, size: size, kind: .bind, isLazy: isLazy).compactMap { $0 as? Bind }
     }
 
-    private func parseFixupStream(_ data: Data, offset: Int, size: Int, kind: FixupKind) -> [Any] {
+    private func parseFixupStream(_ data: Data, offset: Int, size: Int, kind: FixupKind, isLazy: Bool = false) -> [Any] {
         guard size > 0, offset >= 0, offset + size <= data.count else { return [] }
 
         var rebases: [Rebase] = []
@@ -252,12 +254,12 @@ public struct MachOFile {
 
         func emitRebase() {
             rebases.append(Rebase(segmentIndex: segmentIndex, segmentOffset: segmentOffset, type: type))
-            segmentOffset += 8
+            segmentOffset &+= 8
         }
         func emitBind() {
             binds.append(Bind(segmentIndex: segmentIndex, segmentOffset: segmentOffset,
                               type: type, symbolName: symbolName, addend: addend))
-            segmentOffset += 8
+            segmentOffset &+= 8
         }
 
         while cursor < end {
@@ -267,19 +269,30 @@ public struct MachOFile {
             let imm = UInt64(byte & 0x0F)
 
             switch (kind, opcode) {
-            case (_, 0x00): // DONE
+            case (.rebase, 0x00): // REBASE DONE
                 cursor = end
+            case (.bind, 0x00):
+                if !isLazy {
+                    cursor = end
+                } else {
+                    // Lazy streams continue past DONE with a fresh record.
+                    symbolName = ""
+                    addend = 0
+                    type = 1
+                }
             case (_, 0x10): // SET_TYPE_IMM
                 type = UInt8(imm)
-            case (_, 0x20): // SET_SEGMENT_AND_OFFSET_ULEB
+            case (.rebase, 0x20): // REBASE SET_SEGMENT_AND_OFFSET_ULEB
                 segmentIndex = Int(imm)
-                guard let v = readULEB(&cursor) else { return kind == .rebase ? rebases : binds }
+                guard let v = readULEB(&cursor) else { return rebases }
                 segmentOffset = v
+            case (.bind, 0x20): // BIND SET_DYLIB_ORDINAL_ULEB — not a segment set
+                _ = readULEB(&cursor)
             case (.rebase, 0x30): // REBASE ADD_ADDR_ULEB
                 guard let v = readULEB(&cursor) else { return rebases }
-                segmentOffset += v
+                segmentOffset = segmentOffset &+ v
             case (.rebase, 0x40): // REBASE ADD_ADDR_IMM_SCALED
-                segmentOffset += imm * 8
+                segmentOffset &+= imm &* 8
             case (.rebase, 0x50): // REBASE DO_REBASE_IMM_TIMES
                 for _ in 0..<imm { emitRebase() }
             case (.rebase, 0x60): // REBASE DO_REBASE_ULEB_TIMES
@@ -288,48 +301,48 @@ public struct MachOFile {
             case (.rebase, 0x70): // REBASE DO_REBASE_ADD_ADDR_ULEB
                 emitRebase()
                 guard let v = readULEB(&cursor) else { return rebases }
-                segmentOffset += v
+                segmentOffset &+= v
             case (.rebase, 0x80): // REBASE DO_REBASE_ULEB_TIMES_SKIPPING_ULEB
                 guard let count = readULEB(&cursor), let skip = readULEB(&cursor) else { return rebases }
                 for _ in 0..<count {
                     emitRebase()
-                    segmentOffset += skip
+                    segmentOffset &+= skip
                 }
-            case (.bind, 0x30): // BIND SET_DYLIB_ORDINAL_IMM
+            case (.bind, 0x10): // BIND SET_DYLIB_ORDINAL_IMM
                 break
-            case (.bind, 0x40): // BIND SET_DYLIB_ORDINAL_ULEB
+            case (.bind, 0x20): // BIND SET_DYLIB_ORDINAL_ULEB
                 _ = readULEB(&cursor)
-            case (.bind, 0x50): // BIND SET_DYLIB_SPECIAL_IMM
+            case (.bind, 0x30): // BIND SET_DYLIB_SPECIAL_IMM
                 break
-            case (.bind, 0x60): // BIND SET_SYMBOL_TRAILING_FLAGS_IMM
+            case (.bind, 0x40): // BIND SET_SYMBOL_TRAILING_FLAGS_IMM
                 guard let s = readCStringAtCursor(&cursor) else { return binds }
                 symbolName = s
-            case (.bind, 0x70): // BIND SET_TYPE_IMM
+            case (.bind, 0x50): // BIND SET_TYPE_IMM
                 type = UInt8(imm)
-            case (.bind, 0x80): // BIND SET_ADDEND_SLEB
+            case (.bind, 0x60): // BIND SET_ADDEND_SLEB
                 guard let v = readSLEB(&cursor) else { return binds }
                 addend = v
-            case (.bind, 0x90): // BIND SET_SEGMENT_AND_OFFSET_ULEB
+            case (.bind, 0x70): // BIND SET_SEGMENT_AND_OFFSET_ULEB
                 segmentIndex = Int(imm)
                 guard let v = readULEB(&cursor) else { return binds }
                 segmentOffset = v
-            case (.bind, 0xA0): // BIND ADD_ADDR_ULEB
+            case (.bind, 0x80): // BIND ADD_ADDR_ULEB
                 guard let v = readULEB(&cursor) else { return binds }
-                segmentOffset += v
-            case (.bind, 0xB0): // BIND DO_BIND
+                segmentOffset = segmentOffset &+ v
+            case (.bind, 0x90): // BIND DO_BIND
                 emitBind()
-            case (.bind, 0xC0): // BIND DO_BIND_ADD_ADDR_ULEB
+            case (.bind, 0xA0): // BIND DO_BIND_ADD_ADDR_ULEB
                 emitBind()
                 guard let v = readULEB(&cursor) else { return binds }
-                segmentOffset += v
-            case (.bind, 0xD0): // BIND DO_BIND_ADD_ADDR_IMM_SCALED
+                segmentOffset = segmentOffset &+ v
+            case (.bind, 0xB0): // BIND DO_BIND_ADD_ADDR_IMM_SCALED
                 emitBind()
-                segmentOffset += imm * 8
-            case (.bind, 0xE0): // BIND DO_BIND_ULEB_TIMES_SKIPPING_ULEB
+                segmentOffset &+= imm &* 8
+            case (.bind, 0xC0): // BIND DO_BIND_ULEB_TIMES_SKIPPING_ULEB
                 guard let count = readULEB(&cursor), let skip = readULEB(&cursor) else { return binds }
                 for _ in 0..<count {
                     emitBind()
-                    segmentOffset += skip
+                    segmentOffset &+= skip
                 }
             default:
                 break

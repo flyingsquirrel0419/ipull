@@ -59,10 +59,14 @@ public struct MachOImage {
             }
             let segment = file.segments[rebase.segmentIndex]
             let offset = try segmentFileOffset(segment: segment, offset: rebase.segmentOffset, size: Self.pointerSize)
-            guard segment.vmaddr >= file.baseAddress else { throw Error.fixupOverflow }
-            let (address, overflow) = loadBase.addingReportingOverflow(segment.vmaddr + rebase.segmentOffset - file.baseAddress)
-            if overflow { throw Error.fixupOverflow }
-            try putPointer(into: &data, at: Int(offset), value: address)
+            guard isFileBacked(segment: segment, offset: rebase.segmentOffset, size: Self.pointerSize) else {
+                continue // BSS slot — nothing to patch
+            }
+            // Rebase = existing pointer value (preferred-base address) + slide.
+            let slot = Int(offset)
+            let existing = data.withUnsafeBytes { $0.load(fromByteOffset: slot, as: UInt64.self) }
+            let delta = loadBase &- file.baseAddress
+            try putPointer(into: &data, at: slot, value: existing &+ delta)
         }
 
         for bind in file.binds {
@@ -81,7 +85,9 @@ public struct MachOImage {
                 guard magnitude <= address else { throw Error.fixupOverflow }
                 address -= magnitude
             }
-            try putPointer(into: &data, at: Int(offset), value: address)
+            if isFileBacked(segment: segment, offset: bind.segmentOffset, size: Self.pointerSize) {
+                try putPointer(into: &data, at: Int(offset), value: address)
+            }
         }
 
         self.file = file.replacingData(with: data)
@@ -115,10 +121,12 @@ public struct MachOImage {
 
     private func segmentFileOffset(segment: MachOFile.Segment, offset: UInt64, size: UInt64) throws -> UInt64 {
         let segmentEnd = offset + size
-        guard segmentEnd <= segment.vmsize, segmentEnd <= segment.filesize else {
-            throw Error.fixupOverflow
-        }
+        guard segmentEnd <= segment.vmsize else { throw Error.segmentTooLarge(segment.name + "@" + String(offset, radix: 16)) }
         return segment.fileoff + offset
+    }
+
+    private func isFileBacked(segment: MachOFile.Segment, offset: UInt64, size: UInt64) -> Bool {
+        offset + size <= segment.filesize
     }
 
     private func putPointer(into data: inout Data, at offset: Int, value: UInt64) throws {

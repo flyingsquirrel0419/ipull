@@ -104,6 +104,16 @@ public final class UnicornEngine {
         cu_hook_del(engine, hookID)
     }
 
+    public typealias InvalidMemHook = @convention(c) (UInt64, UInt32, Int32, UnsafeMutableRawPointer?) -> Int32
+
+    /// Hook unmapped memory accesses. Return 1 to continue past the fault.
+    public func addInvalidMemHook(callback: InvalidMemHook, userData: UnsafeMutableRawPointer?) throws -> UInt64 {
+        var hookID: UInt64 = 0
+        let status = cu_hook_add_invalid_mem(engine, callback, userData, &hookID)
+        guard status == 0 else { throw Error.hookFailed(Self.describe(status)) }
+        return hookID
+    }
+
     // MARK: - Helpers
 
     private static func describe(_ status: Int32) -> String {

@@ -43,6 +43,24 @@ public final class SAPShims {
     /// errno cell inside the guest address space.
     public private(set) var errnoAddress: UInt64 = 0
 
+    /// CoreFP.icxs bytes served to the guest through open()/read().
+    public var icxsData = Data()
+
+    /// Resolve a symbol in the loaded guest images (set by SAPRuntime).
+    public var imageSymbolResolver: ((String) -> UInt64?)?
+
+    /// CoreFP export addresses (set by SAPRuntime) for dlsym.
+    public var coreFPExports: [String: UInt64] = [:]
+
+    static let coreFPPath = "./CoreFP"
+    static let fakeCoreFPHandle: UInt64 = 0xC0DE_F00D
+    var icxsOffset = 0
+    static let coreFPIcxsPath = "./../CoreFP.icxs"
+    static let coreFPFileDescriptor: UInt64 = 0x4943_5853  // "ICXS"
+
+    /// Last shim fault — surfaced by the runtime after emu stops.
+    public var fault: Error?
+
     public init(engine: UnicornEngine) throws {
         self.engine = engine
         try engine.map(address: Self.shimBase, size: Self.shimSize)
@@ -55,7 +73,7 @@ public final class SAPShims {
     func register(names: [String], handler: @escaping Handler) throws {
         let address = codeCursor
         // One-byte stub; the hook dispatches on the address before execute.
-        try engine.write(address: address, data: Data([0xCC])) // int3
+        try engine.write(address: address, data: Data([0xC3])) // ret — hook fires first
         codeCursor += Self.slotSize
         let entry = Entry(names: names, handler: handler, address: address)
         entriesByAddress[address] = entry
@@ -64,9 +82,39 @@ public final class SAPShims {
         }
     }
 
+    /// Register an inert data cell for a constant object reference
+    /// (kCF*/NS*/CSSM OID symbols — read as addresses, never called).
+    @discardableResult
+    public func addData(_ name: String, contents: Data = Data(count: 8)) throws -> UInt64 {
+        if let existing = symbols[name] { return existing }
+        dataCursor = (dataCursor + 7) & ~UInt64(7)
+        let address = dataCursor
+        dataCursor += UInt64(max(contents.count, 8))
+        try engine.write(address: address, data: contents)
+        symbols[name] = address
+        return address
+    }
+
     /// Resolve an imported symbol name to its shim address.
     public func address(of symbol: String) -> UInt64? {
         symbols[symbol]
+    }
+
+    /// Resolve like ipatool: known symbols return their slot; unknown imports
+    /// get a trap slot whose handler records a fault and stops emulation with
+    /// a clear error instead of jumping to address 0.
+    public func resolve(_ symbol: String) throws -> UInt64 {
+        if let existing = symbols[symbol] { return existing }
+        let address = codeCursor
+        try engine.write(address: address, data: Data([0xC3]))
+        codeCursor += Self.slotSize
+        let entry = Entry(names: [symbol], handler: { shims in
+            shims.fault = .dispatchFailed("unsupported import: \(symbol)")
+            throw Error.dispatchFailed("unsupported import: \(symbol)")
+        }, address: address)
+        entriesByAddress[address] = entry
+        symbols[symbol] = address
+        return address
     }
 
     private func installHook() throws {
@@ -92,7 +140,11 @@ public final class SAPShims {
         do {
             try entry.handler(self)
             try returnToCaller()
+        } catch let error as Error {
+            fault = error
+            engine.stop()
         } catch {
+            fault = .dispatchFailed("unknown shim failure")
             engine.stop()
         }
     }
@@ -200,6 +252,125 @@ public final class SAPShims {
             try shims.setReturn(0)
         }
 
+        // File shim for CoreFP.icxs (the guest reads it from "disk").
+        try register(names: ["_open", "_open$UNIX2003"]) { shims in
+            let pathAddress = try shims.argument(0)
+            let path = try shims.readGuestString(at: pathAddress)
+            if path == Self.coreFPIcxsPath {
+                shims.icxsOffset = 0
+                try shims.setReturn(Self.coreFPFileDescriptor)
+            } else {
+                try shims.setReturn(UInt64(bitPattern: -1))
+            }
+        }
+
+        try register(names: ["_read", "_read$UNIX2003"]) { shims in
+            let descriptor = try shims.argument(0)
+            let buffer = try shims.argument(1)
+            let requested = Int(try shims.argument(2))
+            guard descriptor == Self.coreFPFileDescriptor else {
+                try shims.setReturn(UInt64(bitPattern: -1))
+                return
+            }
+            let remaining = shims.icxsData.count - shims.icxsOffset
+            let size = min(requested, max(remaining, 0))
+            if size > 0 {
+                let chunk = shims.icxsData.subdata(in: shims.icxsOffset..<(shims.icxsOffset + size))
+                try shims.engine.write(address: buffer, data: chunk)
+                shims.icxsOffset += size
+            }
+            try shims.setReturn(UInt64(size))
+        }
+
+        try register(names: ["_pthread_once"]) { shims in
+            let control = try shims.argument(0)
+            let initializer = try shims.argument(1)
+            let current = try shims.engine.read(address: control, size: 8)
+                .withUnsafeBytes { $0.load(as: UInt64.self) }
+            if current != 0 {
+                // Call the initializer once by pushing it as the return target.
+                try shims.engine.write(address: control,
+                                       data: withUnsafeBytes(of: UInt64(0).littleEndian) { Data($0) })
+                var rsp = try shims.engine.read(.rsp)
+                rsp -= 8
+                try shims.engine.write(address: rsp,
+                                       data: withUnsafeBytes(of: initializer.littleEndian) { Data($0) })
+                try shims.engine.write(.rsp, rsp)
+            }
+            try shims.setReturn(0)
+        }
+
+        try register(names: ["_IOIteratorNext"]) { shims in
+            // Return 0 (no more items) — iterator exhaustion.
+            try shims.setReturn(0)
+        }
+        try register(names: ["_IORegistryEntryGetParentEntry"]) { shims in
+            let out = try shims.argument(1)
+            if out != 0 {
+                try shims.engine.write(address: out,
+                                       data: withUnsafeBytes(of: UInt64(0).littleEndian) { Data($0) })
+            }
+            try shims.setReturn(0)
+        }
+        try register(names: ["_IOServiceGetMatchingServices"]) { shims in
+            let iteratorOut = try shims.argument(2)
+            if iteratorOut != 0 {
+                try shims.engine.write(address: iteratorOut,
+                                       data: withUnsafeBytes(of: UInt64(0).littleEndian) { Data($0) })
+            }
+            try shims.setReturn(0)
+        }
+        try register(names: ["_IOServiceGetMatchingService"]) { shims in
+            try shims.setReturn(UInt64(UInt32.max))
+        }
+        try register(names: ["_OSAtomicCompareAndSwap32Barrier"]) { shims in
+            let oldValue = try shims.argument(0)
+            let address = try shims.argument(2)
+            let current = try shims.engine.read(address: address, size: 4)
+                .withUnsafeBytes { $0.load(as: UInt32.self) }
+            let matched = UInt64(current) == (oldValue & 0xFFFFFFFF)
+            if matched {
+                let newValue = UInt32(truncatingIfNeeded: try shims.argument(1))
+                try shims.engine.write(address: address,
+                                       data: withUnsafeBytes(of: newValue.littleEndian) { Data($0) })
+            }
+            try shims.setReturn(matched ? 1 : 0)
+        }
+        try register(names: ["___error"]) { shims in
+            try shims.setReturn(shims.errnoAddress)
+        }
+
+        try register(names: ["_abort"]) { shims in
+            shims.fault = .dispatchFailed("guest called abort")
+            throw Error.dispatchFailed("guest called abort")
+        }
+        try register(names: ["___stack_chk_fail"]) { shims in
+            shims.fault = .dispatchFailed("stack canary check failed")
+            throw Error.dispatchFailed("stack canary check failed")
+        }
+        try register(names: ["dyld_stub_binder"]) { shims in
+            shims.fault = .dispatchFailed("dyld_stub_binder called (unpatched lazy stub)")
+            throw Error.dispatchFailed("dyld_stub_binder called")
+        }
+
+        try register(names: ["_dlopen"]) { shims in
+            let pathAddress = try shims.argument(0)
+            let path = try shims.readGuestString(at: pathAddress)
+            if path == Self.coreFPPath {
+                try shims.setReturn(Self.fakeCoreFPHandle)
+            } else {
+                try shims.setReturn(0)
+            }
+        }
+
+        try register(names: ["_dlsym"]) { shims in
+            // ipatool: resolve "_" + name in the CoreFP export table only.
+            let nameAddress = try shims.argument(1)
+            let symbol = "_" + (try shims.readGuestString(at: nameAddress))
+            let address = shims.coreFPExports[symbol] ?? 0
+            try shims.setReturn(address)
+        }
+
         try register(names: ["_sysctlbyname"]) { shims in
             let nameAddress = try shims.argument(0)
             let oldp = try shims.argument(1)
@@ -212,6 +383,26 @@ public final class SAPShims {
                                            data: withUnsafeBytes(of: UInt64(9).littleEndian) { Data($0) })
                 }
             }
+            try shims.setReturn(0)
+        }
+
+        // Objective-C runtime stubs — the guest calls objc_msgSend for a
+        // couple of read-only lookups; returning 0/nil is safe for the SAP
+        // signing path (verified by the reference implementation's handler).
+        try register(names: ["_objc_msgSend", "_objc_msgSendSuper2", "_objc_msgSend_fixup"]) { shims in
+            try shims.setReturn(0)
+        }
+        try register(names: ["_objc_retain", "_objc_release", "_objc_retainAutoreleasedReturnValue",
+                             "_objc_autoreleasePoolPush"]) { shims in
+            try shims.setReturn(0)
+        }
+        try register(names: ["_objc_autoreleasePoolPop", "_objc_storeStrong"]) { shims in
+            try shims.setReturn(0)
+        }
+        try register(names: ["_NSClassFromString", "_NSSelectorFromString"]) { shims in
+            try shims.setReturn(0)
+        }
+        try register(names: ["_pthread_rwlock_rdlock", "_pthread_rwlock_destroy"]) { shims in
             try shims.setReturn(0)
         }
 

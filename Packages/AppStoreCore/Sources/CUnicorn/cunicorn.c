@@ -76,6 +76,33 @@ int cu_hook_del(cu_engine engine, uint64_t hook_id) {
     return (int)uc_hook_del((uc_engine *)engine, (uc_hook)(uintptr_t)hook_id);
 }
 
+static int invalid_mem_trampoline(uc_engine *uc, uc_mem_type type, uint64_t address,
+                                  int size, int64_t value, void *user_data) {
+    (void)uc; (void)value;
+    void **box = (void **)user_data;
+    cu_invalid_mem_hook_fn fn = (cu_invalid_mem_hook_fn)box[0];
+    void *real_user = box[1];
+    return fn(address, (uint32_t)size, (int)type, real_user);
+}
+
+int cu_hook_add_invalid_mem(cu_engine engine, cu_invalid_mem_hook_fn callback,
+                            void *user_data, uint64_t *out_hook_id) {
+    void **box = malloc(2 * sizeof(void *));
+    box[0] = (void *)callback;
+    box[1] = user_data;
+    uc_hook hook;
+    uc_err err = uc_hook_add((uc_engine *)engine, &hook,
+                             UC_HOOK_MEM_READ_UNMAPPED | UC_HOOK_MEM_WRITE_UNMAPPED
+                             | UC_HOOK_MEM_FETCH_UNMAPPED,
+                             (void *)invalid_mem_trampoline, box, 1, 0);
+    if (err != UC_ERR_OK) {
+        free(box);
+        return (int)err;
+    }
+    *out_hook_id = (uint64_t)(uintptr_t)hook;
+    return 0;
+}
+
 const char *cu_strerror(int code) {
     return uc_strerror((uc_err)code);
 }

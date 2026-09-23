@@ -49,6 +49,12 @@ public final class SAPRuntime {
         "_jEHf8Xzsv8K",   // dispose
     ]
 
+    /// CoreFP exports the other images bind against (per ipatool).
+    private static let coreFPExportNames = [
+        "_WIn9UJ86JKdV4dM", "_X46O5IeS", "_YlCJ3lg",
+        "_dku592fbFAj", "_fdjkDSAFjklaf2s", "_lxpgvVMLd0S7uRl",
+    ]
+
     private let engine: UnicornEngine
     private let shims: SAPShims
     private let heapState = SAPShims.HeapState()
@@ -56,6 +62,7 @@ public final class SAPRuntime {
     private var isClosed = false
 
     private var entries: [String: UInt64] = [:]
+    private var lastTrace: UnsafeMutableRawPointer?
 
     public init(assets: SAPAssetBundle, hardwareID: Data) throws {
         engine = try UnicornEngine()
@@ -69,6 +76,25 @@ public final class SAPRuntime {
         try engine.map(address: Self.stackBase, size: Self.stackSize)
 
         shims = try SAPShims(engine: engine)
+        shims.icxsData = assets.coreFPICXS
+
+        // Trace the last executed instructions so a fault shows the path.
+        var trace: [UInt64] = []
+        let tracePtr = Unmanaged.passRetained(TraceBox()).toOpaque()
+        _ = try? engine.addCodeHook(begin: 0, end: UInt64.max, callback: { address, _, userData in
+            guard let userData else { return }
+            let box = Unmanaged<TraceBox>.fromOpaque(userData).takeUnretainedValue()
+            box.addresses.append(address)
+            if box.addresses.count > 64 { box.addresses.removeFirst() }
+        }, userData: tracePtr)
+        lastTrace = tracePtr
+
+        // Log the exact faulting address on unmapped access, then stop.
+        let selfPtr = Unmanaged.passUnretained(self).toOpaque()
+        _ = try? engine.addInvalidMemHook(callback: { address, size, type, _ in
+            Log.error(.auth, "guest invalid mem access at \(String(address, radix: 16)) size \(size) type \(type)")
+            return 0
+        }, userData: selfPtr)
         try shims.registerMemoryServices(heap: heapState)
 
         try loadImages(assets: assets, hardwareID: hardwareID)
@@ -79,24 +105,35 @@ public final class SAPRuntime {
         var commerceCore = try MachOImage(name: "CommerceCore", data: assets.commerceCore)
         var commerceKit = try MachOImage(name: "CommerceKit", data: assets.commerceKit)
 
-        // Resolve entry exports from CommerceKit first (they feed the bind resolver).
+        // Shared export table: entry points (CommerceKit) + CoreFP exports +
+        // CommerceCore's MAC address export — all resolvable during binds.
         var exports: [String: UInt64] = [:]
-        for name in Self.entryNames {
-            guard let address = commerceKit.file.symbolAddress(name) else {
+
+        func exportAddress(_ name: String, in image: MachOImage, base: UInt64) throws -> UInt64 {
+            guard let address = image.file.symbolAddress(name) else {
                 throw Error.exportMissing(name)
             }
-            let (resolved, overflow) = Self.commerceKitBase
-                .addingReportingOverflow(address - commerceKit.file.baseAddress)
+            let (resolved, overflow) = base.addingReportingOverflow(address - image.file.baseAddress)
             if overflow { throw Error.exportMissing(name) }
-            exports[name] = resolved
+            return resolved
+        }
+
+        for name in Self.entryNames {
+            exports[name] = try exportAddress(name, in: commerceKit, base: Self.commerceKitBase)
+        }
+        for name in Self.coreFPExportNames {
+            exports[name] = try exportAddress(name, in: coreFP, base: Self.coreFPBase)
+        }
+        if let mac = try? exportAddress("_get_mac_address", in: commerceCore, base: Self.commerceCoreBase) {
+            exports["_get_mac_address"] = mac
         }
         entries = exports
 
         let resolve: (String) throws -> UInt64 = { [shims] name in
             if let address = exports[name] { return address }
-            if let address = shims.address(of: name) { return address }
-            Log.error(.auth, "unresolved SAP import: \(name)")
-            return 0
+            if let known = shims.address(of: name) { return known }
+            Log.error(.auth, "genuinely unregistered import: \(name)")
+            return try shims.resolve(name)
         }
 
         try coreFP.relocate(loadBase: Self.coreFPBase, resolve: resolve)
@@ -107,6 +144,25 @@ public final class SAPRuntime {
         try coreFP.load(into: memory)
         try commerceCore.load(into: memory)
         try commerceKit.load(into: memory)
+
+        // Pre-register inert data slots for constant-object imports so binds
+        // resolve them to valid guest memory instead of trap stubs.
+        let dataSymbolPrefixes = ["_kCF", "_kSec", "_kDADisk", "_kIOMaster", "_NS", "_CSSMOID", "__NS", "__kCF"]
+        let allSymbols = Set(coreFP.file.binds.map(\.symbolName)
+            + commerceCore.file.binds.map(\.symbolName)
+            + commerceKit.file.binds.map(\.symbolName))
+        for symbol in allSymbols where dataSymbolPrefixes.contains(where: { symbol.hasPrefix($0) }) {
+            if exports[symbol] == nil, shims.address(of: symbol) == nil {
+                try? shims.addData(symbol)
+            }
+        }
+
+        // dlsym resolves against CoreFP's export table (relocated).
+        var fpExports: [String: UInt64] = [:]
+        for (name, address) in coreFP.file.symbols {
+            fpExports[name] = Self.coreFPBase + (address - coreFP.file.baseAddress)
+        }
+        shims.coreFPExports = fpExports
     }
 
     // MARK: - Session
@@ -207,8 +263,26 @@ public final class SAPRuntime {
         }
         try engine.write(.rsp, stackPointer)
 
-        try engine.run(from: function, until: Self.returnAddress,
-                       timeoutMicroseconds: Self.guestTimeoutMicroseconds)
+        do {
+            try engine.run(from: function, until: Self.returnAddress,
+                           timeoutMicroseconds: Self.guestTimeoutMicroseconds)
+        } catch {
+            let rip = (try? engine.read(.rip)) ?? 0
+            let rsp = (try? engine.read(.rsp)) ?? 0
+            Log.error(.auth, "guest fault at RIP=\(String(rip, radix: 16)) RSP=\(String(rsp, radix: 16))")
+            if let lastTrace {
+                let box = Unmanaged<TraceBox>.fromOpaque(lastTrace).takeUnretainedValue()
+                let tail = box.addresses.suffix(16).map { String($0, radix: 16) }.joined(separator: " ")
+                Log.error(.auth, "guest trace tail: \(tail)")
+            }
+            throw error
+        }
+
+        // A shim handler may have recorded a fault and stopped emulation.
+        if let fault = shims.fault {
+            shims.fault = nil
+            throw fault
+        }
 
         let rip = try engine.read(.rip)
         guard rip == Self.returnAddress else {
@@ -283,4 +357,8 @@ private struct EngineMemory: MachOImage.Memory {
     let engine: UnicornEngine
     func map(address: UInt64, size: UInt64) throws { try engine.map(address: address, size: size) }
     func write(address: UInt64, data: Data) throws { try engine.write(address: address, data: data) }
+}
+
+final class TraceBox {
+    var addresses: [UInt64] = []
 }
