@@ -117,6 +117,12 @@ extension URLSessionHTTPClient: StreamingHTTPClient {
         // timeout (URLError -1001). Give it room: 10 min per request, 2 h total.
         configuration.timeoutIntervalForRequest = 600
         configuration.timeoutIntervalForResource = 7200
+        // Wait through transient connectivity drops instead of erroring
+        // immediately (URLError -1005 on this network).
+        #if !os(Linux)
+        configuration.waitsForConnectivity = true
+        #endif
+        configuration.isDiscretionary = false
         let session = URLSession(configuration: configuration, delegate: delegate, delegateQueue: nil)
         defer { session.invalidateAndCancel() }
 
