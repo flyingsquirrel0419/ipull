@@ -12,7 +12,7 @@ let package = Package(
         .target(name: "CBzip2"),
         .target(
             name: "CUnicorn",
-            linkerSettings: [.unsafeFlags(["-L", "Vendor/unicorn/lib", "-lunicorn"])]
+            linkerSettings: [.unsafeFlags(["-L", "Vendor/unicorn/lib", "-L", "Packages/AppStoreCore/Vendor/unicorn/lib", "-lunicorn"])]
         ),
         .target(
             name: "AppStoreCore",
