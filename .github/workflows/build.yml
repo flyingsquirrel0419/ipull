@@ -38,11 +38,13 @@ jobs:
         run: |
           mkdir -p Packages/AppStoreCore/Vendor/unicorn/lib
           cp build/unicorn/iphonesimulator/lib/libunicorn.a Packages/AppStoreCore/Vendor/unicorn/lib/
-      - name: Run tests on iOS Simulator
+      - name: Run package tests on macOS (host arch matches simulator target)
+        run: swift test --package-path Packages/AppStoreCore
+      - name: Build package for iOS Simulator (arm64)
         run: |
-          xcodebuild test \
+          xcodebuild build \
             -scheme AppStoreCore \
-            -destination 'platform=iOS Simulator,name=iPhone 16' \
+            -destination 'generic/platform=iOS Simulator' \
             -package-path Packages/AppStoreCore \
             CODE_SIGNING_ALLOWED=NO \
             ONLY_ACTIVE_ARCH=YES \
