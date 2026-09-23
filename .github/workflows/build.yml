@@ -23,6 +23,30 @@ jobs:
             build/unicorn/iphoneos/
             build/unicorn/iphonesimulator/
             build/unicorn/macos/
+  simulator-tests:
+    name: Core tests on iOS Simulator (arm64)
+    runs-on: macos-15
+    needs: unicorn-ios
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download unicorn artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: unicorn-ios
+          path: build/unicorn
+      - name: Vendor unicorn (simulator)
+        run: |
+          mkdir -p Packages/AppStoreCore/Vendor/unicorn/lib
+          cp build/unicorn/iphonesimulator/lib/libunicorn.a Packages/AppStoreCore/Vendor/unicorn/lib/
+      - name: Run tests on iOS Simulator
+        run: |
+          xcodebuild test \
+            -scheme AppStoreCore \
+            -destination 'platform=iOS Simulator,name=iPhone 16' \
+            -package-path Packages/AppStoreCore \
+            CODE_SIGNING_ALLOWED=NO \
+            ONLY_ACTIVE_ARCH=YES \
+            ARCHS=arm64
   core-tests:
     name: AppStoreCore unit tests
     runs-on: macos-15
