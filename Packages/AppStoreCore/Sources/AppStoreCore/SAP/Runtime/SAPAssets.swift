@@ -31,6 +31,8 @@ public protocol SAPAssetProviding: Sendable {
 
 /// Loads SAP assets from cache, or downloads them from Apple's update
 /// package and extracts them from its bzip2-compressed CPIO Scripts member.
+/// Assets are verified against pinned SHA-256 digests and cached under
+/// Application Support — downloaded once, reused forever.
 public final class SAPAssets: SAPAssetProviding, @unchecked Sendable {
 
     struct FileSpec: Sendable {
@@ -129,8 +131,8 @@ public final class SAPAssets: SAPAssetProviding, @unchecked Sendable {
             .appendingPathComponent("ipull-sap-\(UUID().uuidString).pkg")
         defer { try? FileManager.default.removeItem(at: tempURL) }
 
-        // Fast path: parallel ranged download. Probe the total size with a 1-byte
-        // range request; when the server answers 206 with Content-Range, fan out.
+        // Parallel ranged download when the server supports it (swcdn does):
+        // probe the total size with a 1-byte range request, then fan out.
         if let streaming = http as? StreamingHTTPClient {
             var probe = HTTPRequest(url: Self.updateURL, headers: ["User-Agent": "iPull/1.0"])
             probe.headers["Range"] = "bytes=0-0"
@@ -150,39 +152,22 @@ public final class SAPAssets: SAPAssetProviding, @unchecked Sendable {
                     let package = try Data(contentsOf: tempURL, options: .mappedIfSafe)
                     return try extractFrom(package: package)
                 } catch {
-                    Log.error(.auth, "parallel download failed, falling back: \(String(describing: type(of: error)))")
+                    Log.error(.auth, "parallel download failed; falling back: \(String(describing: type(of: error)))")
                 }
             }
         }
 
-        // Retry with resume: swcdn supports Range. A lost connection
-        // (URLError -1005, common on 1.2 GB downloads) picks up where it left off.
-        let partialURL = tempURL
+        // Fallback: single stream with retry + resume.
         var lastError: Error?
         for attempt in 1...3 {
             var request = HTTPRequest(url: Self.updateURL, headers: ["User-Agent": "iPull/1.0"])
-            if let existing = try? FileManager.default.attributesOfItem(atPath: partialURL.path),
+            if let existing = try? FileManager.default.attributesOfItem(atPath: tempURL.path),
                let size = existing[.size] as? Int64, size > 0 {
                 request.headers["Range"] = "bytes=\(size)-"
                 Log.info(.auth, "resuming SAP asset download from \(size / 1_048_576) MB (attempt \(attempt))")
             }
-            // Each attempt streams into its own scratch file; on success we
-            // append it onto the shared partial so a retry resumes correctly.
-            let attemptURL = FileManager.default.temporaryDirectory
-                .appendingPathComponent("ipull-sap-attempt-\(UUID().uuidString).pkg")
-            defer { try? FileManager.default.removeItem(at: attemptURL) }
             do {
-                try await performDownload(request: request, to: attemptURL)
-                if request.headers["Range"] != nil,
-                   FileManager.default.fileExists(atPath: partialURL.path),
-                   let existing = try? Data(contentsOf: partialURL, options: .mappedIfSafe),
-                   let fresh = try? Data(contentsOf: attemptURL) {
-                    var combined = existing
-                    combined.append(fresh)
-                    try combined.write(to: partialURL, options: .atomic)
-                } else if !FileManager.default.fileExists(atPath: partialURL.path) {
-                    try FileManager.default.moveItem(at: attemptURL, to: partialURL)
-                }
+                try await performDownload(request: request, to: tempURL)
                 lastError = nil
                 break
             } catch {
@@ -191,14 +176,14 @@ public final class SAPAssets: SAPAssetProviding, @unchecked Sendable {
             }
         }
         if let lastError { throw lastError }
-        let package = try Data(contentsOf: partialURL, options: .mappedIfSafe)
-
+        let package = try Data(contentsOf: tempURL, options: .mappedIfSafe)
         return try extractFrom(package: package)
-
     }
-    private func performDownload(request: HTTPRequest, to tempURL: URL) async throws {
+
+    /// One download attempt: stream to disk when supported, else buffered.
+    private func performDownload(request: HTTPRequest, to destination: URL) async throws {
         if let streaming = http as? StreamingHTTPClient {
-            let response = try await streaming.download(request, to: tempURL) { written, total in
+            let response = try await streaming.download(request, to: destination) { written, total in
                 let writtenMB = written / 1_048_576
                 if let total {
                     Log.info(.auth, "SAP assets: \(writtenMB) MB / \(total / 1_048_576) MB")
@@ -214,21 +199,21 @@ public final class SAPAssets: SAPAssetProviding, @unchecked Sendable {
             guard response.statusCode == 200 || response.statusCode == 206 else {
                 throw SAPAssetsError.downloadFailed("HTTP \(response.statusCode)")
             }
-            if FileManager.default.fileExists(atPath: tempURL.path),
-               let existing = try? Data(contentsOf: tempURL) {
+            if FileManager.default.fileExists(atPath: destination.path),
+               let existing = try? Data(contentsOf: destination) {
                 var combined = existing
                 combined.append(response.data)
-                try combined.write(to: tempURL, options: .atomic)
+                try combined.write(to: destination, options: .atomic)
             } else {
-                try response.data.write(to: tempURL, options: .atomic)
+                try response.data.write(to: destination, options: .atomic)
             }
         }
     }
 
-    /// Download the package in parallel ranged chunks (swcdn supports Range),
-    /// then concatenate. Much faster than a single stream on decent Wi-Fi.
+    /// Parallel ranged download (swcdn supports Range): N concurrent range
+    /// GETs to per-part files, then concatenate in order.
     private func performParallelDownload(request base: HTTPRequest, to destination: URL, totalSize: Int64) async throws {
-        let parts = 8
+        let parts = 2
         let chunkSize = totalSize / Int64(parts)
         var partURLs: [URL] = []
         defer { for u in partURLs { try? FileManager.default.removeItem(at: u) } }
@@ -242,15 +227,35 @@ public final class SAPAssets: SAPAssetProviding, @unchecked Sendable {
                 partURLs.append(partURL)
 
                 group.addTask { [http] in
-                    var partRequest = HTTPRequest(url: base.url, headers: base.headers)
-                    partRequest.headers["Range"] = "bytes=\(start)-\(end)"
-                    guard let streaming = http as? StreamingHTTPClient else {
-                        throw SAPAssetsError.downloadFailed("streaming client required for parallel download")
+                    // Retry each part up to 4 times, resuming from the partial file.
+                    var lastError: Error?
+                    for attempt in 1...4 {
+                        var partRequest = HTTPRequest(url: base.url, headers: base.headers)
+                        if let existing = try? FileManager.default.attributesOfItem(atPath: partURL.path),
+                           let size = existing[.size] as? Int64, size > 0 {
+                            let resumeFrom = start + size
+                            guard resumeFrom < end else { break }
+                            partRequest.headers["Range"] = "bytes=\(resumeFrom)-\(end)"
+                            Log.info(.auth, "part \(index) resume from \(size / 1_048_576) MB (attempt \(attempt))")
+                        } else {
+                            partRequest.headers["Range"] = "bytes=\(start)-\(end)"
+                        }
+                        guard let streaming = http as? StreamingHTTPClient else {
+                            throw SAPAssetsError.downloadFailed("range request required")
+                        }
+                        do {
+                            let response = try await streaming.download(partRequest, to: partURL, progress: nil)
+                            guard response.statusCode == 206 else {
+                                throw SAPAssetsError.downloadFailed("range request returned \(response.statusCode)")
+                            }
+                            lastError = nil
+                            break
+                        } catch {
+                            lastError = error
+                            Log.error(.auth, "part \(index) attempt \(attempt) failed: \(String(describing: type(of: error)))")
+                        }
                     }
-                    let response = try await streaming.download(partRequest, to: partURL, progress: nil)
-                    guard response.statusCode == 206 else {
-                        throw SAPAssetsError.downloadFailed("range request returned \(response.statusCode)")
-                    }
+                    if let lastError { throw lastError }
                 }
             }
             try await group.waitForAll()
@@ -269,6 +274,9 @@ public final class SAPAssets: SAPAssetProviding, @unchecked Sendable {
     /// XAR → bzip2 CPIO → extract the four assets, verify digests.
     private func extractFrom(package: Data) throws -> SAPAssetBundle {
         let xar = try XARReader(data: package)
+        // The pinned package keeps the files in the "Scripts" member, a
+        // bzip2-compressed CPIO stream starting at byte 0 (verified against
+        // the real package during development — see docs/research).
         guard let scriptsEntry = xar.entry(named: "Scripts"),
               let scriptsRaw = xar.bytes(of: scriptsEntry, in: package)
         else {
