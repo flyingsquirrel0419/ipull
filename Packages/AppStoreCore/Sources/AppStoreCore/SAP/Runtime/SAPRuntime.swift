@@ -334,10 +334,10 @@ public final class SAPRuntime {
     }
 
     private func readUInt32(at address: UInt64) throws -> UInt32 {
-        try engine.read(address: address, size: 4).withUnsafeBytes { $0.load(as: UInt32.self) }
+        try engine.read(address: address, size: 4).withUnsafeBytes { UInt32(littleEndian: $0.load(as: UInt32.self)) }
     }
     private func readUInt64(at address: UInt64) throws -> UInt64 {
-        try engine.read(address: address, size: 8).withUnsafeBytes { $0.load(as: UInt64.self) }
+        try engine.read(address: address, size: 8).withUnsafeBytes { UInt64(littleEndian: $0.load(as: UInt64.self)) }
     }
     private func writeUInt64(_ value: UInt64, at address: UInt64) throws {
         try engine.write(address: address, data: withUnsafeBytes(of: value.littleEndian) { Data($0) })

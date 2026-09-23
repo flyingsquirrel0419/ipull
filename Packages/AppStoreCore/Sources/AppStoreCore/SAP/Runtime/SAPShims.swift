@@ -156,7 +156,7 @@ public final class SAPShims {
     private func returnToCaller() throws {
         let rsp = try engine.read(.rsp)
         let bytes = try engine.read(address: rsp, size: 8)
-        let returnAddress = bytes.withUnsafeBytes { $0.load(as: UInt64.self) }
+        let returnAddress = bytes.withUnsafeBytes { UInt64(littleEndian: $0.load(as: UInt64.self)) }
         try engine.write(.rsp, rsp + 8)
         try engine.write(.rip, returnAddress)
     }
@@ -293,7 +293,7 @@ public final class SAPShims {
             let control = try shims.argument(0)
             let initializer = try shims.argument(1)
             let current = try shims.engine.read(address: control, size: 8)
-                .withUnsafeBytes { $0.load(as: UInt64.self) }
+                .withUnsafeBytes { UInt64(littleEndian: $0.load(as: UInt64.self)) }
             if current != 0 {
                 // Call the initializer once by pushing it as the return target.
                 try shims.engine.write(address: control,
@@ -340,7 +340,7 @@ public final class SAPShims {
             let oldValue = try shims.argument(0)
             let address = try shims.argument(2)
             let current = try shims.engine.read(address: address, size: 4)
-                .withUnsafeBytes { $0.load(as: UInt32.self) }
+                .withUnsafeBytes { UInt32(littleEndian: $0.load(as: UInt32.self)) }
             let matched = UInt64(current) == (oldValue & 0xFFFFFFFF)
             if matched {
                 let newValue = UInt32(truncatingIfNeeded: try shims.argument(1))

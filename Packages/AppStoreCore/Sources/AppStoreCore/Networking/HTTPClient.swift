@@ -109,7 +109,11 @@ extension URLSessionHTTPClient: StreamingHTTPClient {
         }
 
         let delegate = DownloadDelegate(destination: destination, progress: progress)
-        let session = URLSession(configuration: .default, delegate: delegate, delegateQueue: nil)
+        let configuration = URLSessionConfiguration.default
+        // Large downloads (SAP assets ~1.2 GB) don't burn the user's data plan
+        // by default; iOS prompts to allow cellular when required.
+        configuration.allowsCellularAccess = request.headers["X-iPull-Allow-Cellular"] == nil
+        let session = URLSession(configuration: configuration, delegate: delegate, delegateQueue: nil)
         defer { session.invalidateAndCancel() }
 
         do {
