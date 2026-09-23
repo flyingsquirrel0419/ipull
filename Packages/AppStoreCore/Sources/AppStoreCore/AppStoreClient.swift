@@ -34,7 +34,9 @@ public final class AppStoreClient: Sendable {
         }
         let hardwareID = (try? DeviceIdentity.currentGUID(secretStore: secrets))
             .flatMap { Data($0.utf8) } ?? Data()
-        let signer = SAPSigner(http: http, bagProvider: bag, hardwareID: hardwareID)
+        let assets = SAPAssets(http: http)
+        let signer = EmulatedSAPSigner(http: http, bagProvider: bag,
+                                       assetProvider: assets, hardwareID: hardwareID)
         return AppStoreClient(
             auth: AuthenticationService(http: http, bagProvider: bag, signer: signer, secrets: secrets, guidProvider: guidProvider),
             search: SearchService(http: http),
