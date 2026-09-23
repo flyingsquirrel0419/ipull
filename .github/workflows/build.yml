@@ -87,6 +87,15 @@ jobs:
       - name: Install XcodeGen
         run: brew install xcodegen
 
+      - name: Download unicorn artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: unicorn-ios
+          path: build/unicorn
+
+      - name: Vendor unicorn for the package (device)
+        run: cp build/unicorn/iphoneos/lib/libunicorn.a Packages/AppStoreCore/Vendor/unicorn/lib/
+
       - name: Generate Xcode project
         run: CI_BUILD_NUMBER=${{ github.run_number }} xcodegen
 
