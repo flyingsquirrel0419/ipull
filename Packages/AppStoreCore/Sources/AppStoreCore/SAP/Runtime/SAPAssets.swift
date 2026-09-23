@@ -129,6 +129,32 @@ public final class SAPAssets: SAPAssetProviding, @unchecked Sendable {
             .appendingPathComponent("ipull-sap-\(UUID().uuidString).pkg")
         defer { try? FileManager.default.removeItem(at: tempURL) }
 
+        // Fast path: parallel ranged download. Probe the total size with a 1-byte
+        // range request; when the server answers 206 with Content-Range, fan out.
+        if let streaming = http as? StreamingHTTPClient {
+            var probe = HTTPRequest(url: Self.updateURL, headers: ["User-Agent": "iPull/1.0"])
+            probe.headers["Range"] = "bytes=0-0"
+            let probeURL = FileManager.default.temporaryDirectory
+                .appendingPathComponent("ipull-probe-\(UUID().uuidString)")
+            defer { try? FileManager.default.removeItem(at: probeURL) }
+            if let probeResponse = try? await streaming.download(probe, to: probeURL, progress: nil),
+               probeResponse.statusCode == 206,
+               let range = probeResponse.header("Content-Range"),
+               let totalString = range.split(separator: "/").last,
+               let total = Int64(totalString),
+               total > 0 {
+                Log.info(.auth, "SAP assets: parallel download, \(total / 1_048_576) MB total")
+                do {
+                    try await performParallelDownload(request: HTTPRequest(url: Self.updateURL, headers: ["User-Agent": "iPull/1.0"]),
+                                                      to: tempURL, totalSize: total)
+                    let package = try Data(contentsOf: tempURL, options: .mappedIfSafe)
+                    return try extractFrom(package: package)
+                } catch {
+                    Log.error(.auth, "parallel download failed, falling back: \(String(describing: type(of: error)))")
+                }
+            }
+        }
+
         // Retry with resume: swcdn supports Range. A lost connection
         // (URLError -1005, common on 1.2 GB downloads) picks up where it left off.
         let partialURL = tempURL
@@ -167,10 +193,82 @@ public final class SAPAssets: SAPAssetProviding, @unchecked Sendable {
         if let lastError { throw lastError }
         let package = try Data(contentsOf: partialURL, options: .mappedIfSafe)
 
+        return try extractFrom(package: package)
+
+    }
+    private func performDownload(request: HTTPRequest, to tempURL: URL) async throws {
+        if let streaming = http as? StreamingHTTPClient {
+            let response = try await streaming.download(request, to: tempURL) { written, total in
+                let writtenMB = written / 1_048_576
+                if let total {
+                    Log.info(.auth, "SAP assets: \(writtenMB) MB / \(total / 1_048_576) MB")
+                } else {
+                    Log.info(.auth, "SAP assets: \(writtenMB) MB")
+                }
+            }
+            guard response.statusCode == 200 || response.statusCode == 206 else {
+                throw SAPAssetsError.downloadFailed("HTTP \(response.statusCode)")
+            }
+        } else {
+            let response = try await http.send(request, body: nil)
+            guard response.statusCode == 200 || response.statusCode == 206 else {
+                throw SAPAssetsError.downloadFailed("HTTP \(response.statusCode)")
+            }
+            if FileManager.default.fileExists(atPath: tempURL.path),
+               let existing = try? Data(contentsOf: tempURL) {
+                var combined = existing
+                combined.append(response.data)
+                try combined.write(to: tempURL, options: .atomic)
+            } else {
+                try response.data.write(to: tempURL, options: .atomic)
+            }
+        }
+    }
+
+    /// Download the package in parallel ranged chunks (swcdn supports Range),
+    /// then concatenate. Much faster than a single stream on decent Wi-Fi.
+    private func performParallelDownload(request base: HTTPRequest, to destination: URL, totalSize: Int64) async throws {
+        let parts = 8
+        let chunkSize = totalSize / Int64(parts)
+        var partURLs: [URL] = []
+        defer { for u in partURLs { try? FileManager.default.removeItem(at: u) } }
+
+        try await withThrowingTaskGroup(of: Void.self) { group in
+            for index in 0..<parts {
+                let start = Int64(index) * chunkSize
+                let end = (index == parts - 1) ? totalSize - 1 : start + chunkSize - 1
+                let partURL = FileManager.default.temporaryDirectory
+                    .appendingPathComponent("ipull-sap-part-\(index)-\(UUID().uuidString)")
+                partURLs.append(partURL)
+
+                group.addTask { [http] in
+                    var partRequest = HTTPRequest(url: base.url, headers: base.headers)
+                    partRequest.headers["Range"] = "bytes=\(start)-\(end)"
+                    guard let streaming = http as? StreamingHTTPClient else {
+                        throw SAPAssetsError.downloadFailed("streaming client required for parallel download")
+                    }
+                    let response = try await streaming.download(partRequest, to: partURL, progress: nil)
+                    guard response.statusCode == 206 else {
+                        throw SAPAssetsError.downloadFailed("range request returned \(response.statusCode)")
+                    }
+                }
+            }
+            try await group.waitForAll()
+        }
+
+        // Concatenate parts in order.
+        FileManager.default.createFile(atPath: destination.path, contents: nil)
+        let output = try FileHandle(forWritingTo: destination)
+        defer { try? output.close() }
+        for url in partURLs.sorted(by: { $0.lastPathComponent < $1.lastPathComponent }) {
+            let data = try Data(contentsOf: url, options: .mappedIfSafe)
+            try output.write(contentsOf: data)
+        }
+    }
+
+    /// XAR → bzip2 CPIO → extract the four assets, verify digests.
+    private func extractFrom(package: Data) throws -> SAPAssetBundle {
         let xar = try XARReader(data: package)
-        // The pinned package keeps the files in the "Scripts" member, which is a
-        // bzip2-compressed CPIO stream starting at byte 0 (verified against the
-        // real package during development — see docs/research).
         guard let scriptsEntry = xar.entry(named: "Scripts"),
               let scriptsRaw = xar.bytes(of: scriptsEntry, in: package)
         else {
@@ -209,37 +307,6 @@ public final class SAPAssets: SAPAssetProviding, @unchecked Sendable {
         )
         try Self.verify(bundle)
         return bundle
-    }
-
-    /// One download attempt: stream to disk when supported, else buffered.
-    /// 206 (partial) is a valid resume response alongside 200.
-    private func performDownload(request: HTTPRequest, to tempURL: URL) async throws {
-        if let streaming = http as? StreamingHTTPClient {
-            let response = try await streaming.download(request, to: tempURL) { written, total in
-                let writtenMB = written / 1_048_576
-                if let total {
-                    Log.info(.auth, "SAP assets: \(writtenMB) MB / \(total / 1_048_576) MB")
-                } else {
-                    Log.info(.auth, "SAP assets: \(writtenMB) MB")
-                }
-            }
-            guard response.statusCode == 200 || response.statusCode == 206 else {
-                throw SAPAssetsError.downloadFailed("HTTP \(response.statusCode)")
-            }
-        } else {
-            let response = try await http.send(request, body: nil)
-            guard response.statusCode == 200 || response.statusCode == 206 else {
-                throw SAPAssetsError.downloadFailed("HTTP \(response.statusCode)")
-            }
-            if FileManager.default.fileExists(atPath: tempURL.path),
-               let existing = try? Data(contentsOf: tempURL) {
-                var combined = existing
-                combined.append(response.data)
-                try combined.write(to: tempURL, options: .atomic)
-            } else {
-                try response.data.write(to: tempURL, options: .atomic)
-            }
-        }
     }
 
     static func verify(_ bundle: SAPAssetBundle) throws {
