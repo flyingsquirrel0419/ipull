@@ -30,7 +30,7 @@ public protocol SAPAssetProviding: Sendable {
 }
 
 /// Loads SAP assets from cache, or downloads them from Apple's update
-/// package and extracts them from its bzip2-compressed CPIO Payload.
+/// package and extracts them from its bzip2-compressed CPIO Scripts member.
 public final class SAPAssets: SAPAssetProviding, @unchecked Sendable {
 
     struct FileSpec: Sendable {
@@ -44,11 +44,6 @@ public final class SAPAssets: SAPAssetProviding, @unchecked Sendable {
     static let updateURL = URL(string:
         "https://swcdn.apple.com/content/downloads/27/34/041-98128-A_SYPWICN3KH/5dqkl4rqgbsr18yzy61yeie9g3cmjc5hiv/OSXUpd10.9.pkg"
     )!
-
-    /// Byte offset within the raw Payload stream where the bzip2 data
-    /// begins (documented in ipatool's assets.go; verified against the
-    /// real package header during research).
-    static let payloadBZOffset = 0x352F40D5
 
     static let requiredFiles: [FileSpec] = [
         FileSpec(name: "CommerceKit",
@@ -145,22 +140,16 @@ public final class SAPAssets: SAPAssetProviding, @unchecked Sendable {
         let package = try Data(contentsOf: tempURL, options: .mappedIfSafe)
 
         let xar = try XARReader(data: package)
-        guard let payloadEntry = xar.entry(named: "Payload"),
-              let payloadRaw = xar.bytes(of: payloadEntry, in: package)
+        // The pinned package keeps the files in the "Scripts" member, which is a
+        // bzip2-compressed CPIO stream starting at byte 0 (verified against the
+        // real package during development — see docs/research).
+        guard let scriptsEntry = xar.entry(named: "Scripts"),
+              let scriptsRaw = xar.bytes(of: scriptsEntry, in: package)
         else {
-            throw SAPAssetsError.missingFile("Payload")
+            throw SAPAssetsError.missingFile("Scripts")
         }
 
-        // The bzip2 stream starts at payloadBZOffset inside the raw payload;
-        // bzlib needs the "BZh" magic prepended.
-        guard payloadRaw.count > Self.payloadBZOffset else {
-            throw SAPAssetsError.missingFile("Payload (short)")
-        }
-        var bzipStream = Data("BZh9".utf8)
-        bzipStream.append(payloadRaw.subdata(in: Self.payloadBZOffset..<payloadRaw.count))
-
-        // CPIO payload is large; decompress into a generously sized buffer.
-        let cpioData = try Bzip2.decompress(bzipStream, expectedSize: 1_600_000_000)
+        let cpioData = try Bzip2.decompress(scriptsRaw, expectedSize: 3_800_000_000)
         let entries = try CPIOReader.entries(in: cpioData)
 
         var found: [String: Data] = [:]
