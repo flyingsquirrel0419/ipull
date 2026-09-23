@@ -107,6 +107,21 @@ extension SAPShims {
             try shims.engine.write(address: dest, data: Data(count: Int(count)))
             try shims.setReturn(0)
         }
+        try register(names: ["___memcpy_chk"]) { shims in
+            let dest = try shims.argument(0)
+            let src = try shims.argument(1)
+            let count = Int(try shims.argument(2))
+            let data = try shims.engine.read(address: src, size: count)
+            try shims.engine.write(address: dest, data: data)
+            try shims.setReturn(dest)
+        }
+        try register(names: ["___memset_chk"]) { shims in
+            let dest = try shims.argument(0)
+            let value = try shims.argument(1)
+            let count = Int(try shims.argument(2))
+            try shims.engine.write(address: dest, data: Data(repeating: UInt8(value & 0xFF), count: count))
+            try shims.setReturn(dest)
+        }
         try register(names: ["_memcmp"]) { shims in
             let a = try shims.argument(0)
             let b = try shims.argument(1)

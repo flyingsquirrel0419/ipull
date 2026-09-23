@@ -43,6 +43,9 @@ public final class SAPShims {
     /// errno cell inside the guest address space.
     public private(set) var errnoAddress: UInt64 = 0
 
+    /// Opaque handle returned for simulated objects (ipatool: UInt64.max).
+    static let fakeHandle: UInt64 = UInt64.max
+
     /// CoreFP.icxs bytes served to the guest through open()/read().
     public var icxsData = Data()
 
@@ -203,8 +206,7 @@ public final class SAPShims {
         try register(names: ["_CFDictionaryGetValue", "_DADiskCopyDescription",
                              "_DADiskCreateFromBSDName", "_DASessionCreate",
                              "_IORegistryEntryCreateCFProperty"]) { shims in
-            shims.fakeHandle &+= 8
-            try shims.setReturn(shims.fakeHandle)
+            try shims.setReturn(Self.fakeHandle)
         }
 
         try register(names: ["_CFRelease", "_IOObjectRelease", "_close", "_close$UNIX2003",
@@ -216,20 +218,25 @@ public final class SAPShims {
         }
 
         try register(names: ["_CFStringCreateWithCString"]) { shims in
-            // Read C string arg, copy into guest data area, return pointer.
-            let source = try shims.argument(0)
-            let text = try shims.readGuestString(at: source)
-            let address = shims.dataCursor
-            shims.dataCursor += UInt64(text.utf8.count + 8)
-            try shims.writeGuestString(text, at: address)
-            try shims.setReturn(address)
+            // ipatool: arg 1 is the C string; return the fake handle for the
+            // platform keys, 0 otherwise. Never copies guest memory.
+            let address = try shims.argument(1)
+            let value = (try? shims.readGuestString(at: address)) ?? ""
+            switch value {
+            case "IOPlatformSerialNumber", "IOPlatformUUID", "board-id":
+                try shims.setReturn(Self.fakeHandle)
+            default:
+                try shims.setReturn(0)
+            }
         }
 
         try register(names: ["_CFStringGetCString"]) { shims in
-            let source = try shims.argument(0)
-            let dest = try shims.argument(1)
-            let text = try shims.readGuestString(at: source)
-            try shims.writeGuestString(text, at: dest)
+            // ipatool: terminate the output buffer, report success.
+            let buffer = try shims.argument(1)
+            let capacity = try shims.argument(2)
+            if buffer != 0 && capacity != 0 {
+                try shims.engine.write(address: buffer, data: Data([0]))
+            }
             try shims.setReturn(1)
         }
 
@@ -298,6 +305,12 @@ public final class SAPShims {
                 try shims.engine.write(.rsp, rsp)
             }
             try shims.setReturn(0)
+        }
+
+        try register(names: ["_fcntl", "_fcntl$UNIX2003", "_lstat$INODE64",
+                             "_statfs", "_statfs$INODE64", "_stat$INODE64", "_sysctl",
+                             "_lockf", "_unlink", "_write", "_opendir$INODE64", "_readdir$INODE64"]) { shims in
+            try shims.setReturn(UInt64(bitPattern: -1))
         }
 
         try register(names: ["_IOIteratorNext"]) { shims in
