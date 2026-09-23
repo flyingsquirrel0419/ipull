@@ -18,3 +18,8 @@ build/
 .claude-flow/data/
 .claude-flow/logs/
 .claude-flow/sessions/
+
+# ruflo/swarm local state
+.swarm/
+ruvector.db
+ruvector.db-*
