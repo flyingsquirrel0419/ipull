@@ -27,3 +27,6 @@ ruvector.db-*
 # SAP fixture binaries (downloaded from Apple CDN at test time in CI; kept out of git)
 Packages/AppStoreCore/Tests/AppStoreCoreTests/Fixtures/*.macho
 Packages/AppStoreCore/Tests/AppStoreCoreTests/Fixtures/CoreFP*
+
+# Vendored unicorn binary (built by CI)
+Packages/AppStoreCore/Vendor/

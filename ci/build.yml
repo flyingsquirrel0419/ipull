@@ -23,8 +23,19 @@ jobs:
   core-tests:
     name: AppStoreCore unit tests
     runs-on: macos-15
+    needs: unicorn-ios
     steps:
       - uses: actions/checkout@v4
+      - name: Download unicorn artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: unicorn-ios
+          path: build/unicorn
+      - name: Vendor unicorn for the package
+        run: |
+          mkdir -p Packages/AppStoreCore/Vendor/unicorn/lib Packages/AppStoreCore/Vendor/unicorn/include
+          cp build/unicorn/iphonesimulator/lib/libunicorn.a Packages/AppStoreCore/Vendor/unicorn/lib/
+          cp -R build/unicorn/iphonesimulator/include/unicorn Packages/AppStoreCore/Vendor/unicorn/include/
       - name: Run core package tests
         run: swift test --package-path Packages/AppStoreCore
 
