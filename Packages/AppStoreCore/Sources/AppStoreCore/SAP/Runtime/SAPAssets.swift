@@ -168,7 +168,17 @@ public final class SAPAssets: SAPAssetProviding, @unchecked Sendable {
             throw SAPAssetsError.missingFile("Scripts")
         }
 
-        let cpioData = try Bzip2.decompress(scriptsRaw, expectedSize: 3_800_000_000)
+        // Stream the bzip2 decompression to disk — the ~3.6 GB result
+        // cannot live in device memory.
+        let scriptsTempURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ipull-sap-scripts-\(UUID().uuidString).bin")
+        defer { try? FileManager.default.removeItem(at: scriptsTempURL) }
+        try scriptsRaw.write(to: scriptsTempURL, options: .atomic)
+        let cpioURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ipull-sap-cpio-\(UUID().uuidString).bin")
+        defer { try? FileManager.default.removeItem(at: cpioURL) }
+        try Bzip2.decompressToFile(source: scriptsTempURL, destination: cpioURL)
+        let cpioData = try Data(contentsOf: cpioURL, options: .mappedIfSafe)
         let entries = try CPIOReader.entries(in: cpioData)
 
         var found: [String: Data] = [:]
