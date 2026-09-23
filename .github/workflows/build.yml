@@ -19,7 +19,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: unicorn-ios
-          path: build/unicorn/*/lib/libunicorn.a
+          path: |
+            build/unicorn/iphoneos/
+            build/unicorn/iphonesimulator/
   core-tests:
     name: AppStoreCore unit tests
     runs-on: macos-15
