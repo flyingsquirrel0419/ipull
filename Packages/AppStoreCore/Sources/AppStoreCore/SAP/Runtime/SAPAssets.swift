@@ -129,33 +129,26 @@ public final class SAPAssets: SAPAssetProviding, @unchecked Sendable {
             .appendingPathComponent("ipull-sap-\(UUID().uuidString).pkg")
         defer { try? FileManager.default.removeItem(at: tempURL) }
 
-        var request = HTTPRequest(url: Self.updateURL, headers: ["User-Agent": "iPull/1.0"])
-        // Resume from a partial download when the CDN supports ranges.
-        if let existing = try? FileManager.default.attributesOfItem(atPath: tempURL.path),
-           let size = existing[.size] as? Int64, size > 0 {
-            request.headers["Range"] = "bytes=\(size)-"
-            Log.info(.auth, "resuming SAP asset download from \(size / 1_048_576) MB")
+        // Retry with resume: swcdn supports Range. A lost connection
+        // (URLError -1005, common on 1.2 GB downloads) picks up where it left off.
+        var lastError: Error?
+        for attempt in 1...3 {
+            var request = HTTPRequest(url: Self.updateURL, headers: ["User-Agent": "iPull/1.0"])
+            if let existing = try? FileManager.default.attributesOfItem(atPath: tempURL.path),
+               let size = existing[.size] as? Int64, size > 0 {
+                request.headers["Range"] = "bytes=\(size)-"
+                Log.info(.auth, "resuming SAP asset download from \(size / 1_048_576) MB (attempt \(attempt))")
+            }
+            do {
+                try await performDownload(request: request, to: tempURL)
+                lastError = nil
+                break
+            } catch {
+                lastError = error
+                Log.error(.auth, "SAP asset download attempt \(attempt) failed: \(String(describing: type(of: error)))")
+            }
         }
-        if let streaming = http as? StreamingHTTPClient {
-            // Stream the ~1.2 GB package straight to disk with progress logs.
-            let response = try await streaming.download(request, to: tempURL) { written, total in
-                let writtenMB = written / 1_048_576
-                if let total {
-                    Log.info(.auth, "SAP assets: \(writtenMB) MB / \(total / 1_048_576) MB")
-                } else {
-                    Log.info(.auth, "SAP assets: \(writtenMB) MB")
-                }
-            }
-            guard response.statusCode == 200 else {
-                throw SAPAssetsError.downloadFailed("HTTP \(response.statusCode)")
-            }
-        } else {
-            let response = try await http.send(request, body: nil)
-            guard response.statusCode == 200 else {
-                throw SAPAssetsError.downloadFailed("HTTP \(response.statusCode)")
-            }
-            try response.data.write(to: tempURL, options: .atomic)
-        }
+        if let lastError { throw lastError }
         let package = try Data(contentsOf: tempURL, options: .mappedIfSafe)
 
         let xar = try XARReader(data: package)
@@ -200,6 +193,37 @@ public final class SAPAssets: SAPAssetProviding, @unchecked Sendable {
         )
         try Self.verify(bundle)
         return bundle
+    }
+
+    /// One download attempt: stream to disk when supported, else buffered.
+    /// 206 (partial) is a valid resume response alongside 200.
+    private func performDownload(request: HTTPRequest, to tempURL: URL) async throws {
+        if let streaming = http as? StreamingHTTPClient {
+            let response = try await streaming.download(request, to: tempURL) { written, total in
+                let writtenMB = written / 1_048_576
+                if let total {
+                    Log.info(.auth, "SAP assets: \(writtenMB) MB / \(total / 1_048_576) MB")
+                } else {
+                    Log.info(.auth, "SAP assets: \(writtenMB) MB")
+                }
+            }
+            guard response.statusCode == 200 || response.statusCode == 206 else {
+                throw SAPAssetsError.downloadFailed("HTTP \(response.statusCode)")
+            }
+        } else {
+            let response = try await http.send(request, body: nil)
+            guard response.statusCode == 200 || response.statusCode == 206 else {
+                throw SAPAssetsError.downloadFailed("HTTP \(response.statusCode)")
+            }
+            if FileManager.default.fileExists(atPath: tempURL.path),
+               let existing = try? Data(contentsOf: tempURL) {
+                var combined = existing
+                combined.append(response.data)
+                try combined.write(to: tempURL, options: .atomic)
+            } else {
+                try response.data.write(to: tempURL, options: .atomic)
+            }
+        }
     }
 
     static func verify(_ bundle: SAPAssetBundle) throws {
