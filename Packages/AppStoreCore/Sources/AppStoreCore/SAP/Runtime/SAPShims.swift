@@ -419,6 +419,26 @@ public final class SAPShims {
             try shims.setReturn(0)
         }
 
+        // Inert stubs for families the guest references but the signing path never
+        // depends on (xpc, dispatch, asl, spinlock, rune). Returning 0 is safe here.
+        let inertZero = [
+            "__dispatch_main_q", "__dispatch_queue_attr_concurrent",
+            "__xpc_error_key_description", "__xpc_type_error",
+            "__xpc_error_connection_interrupted", "__xpc_error_connection_invalid",
+            "__xpc_error_termination_imminent", "__xpc_type_connection",
+            "__xpc_type_dictionary", "__xpc_type_string", "__xpc_type_data",
+            "_xpc_connection_cancel", "_xpc_connection_set_target_queue",
+            "_xpc_copy_description", "_xpc_data_get_bytes_ptr", "_xpc_data_get_length",
+            "_xpc_dictionary_create_reply", "_xpc_dictionary_set_connection",
+            "_xpc_dictionary_set_data", "_xpc_dictionary_set_double",
+            "_OSSpinLockLock", "_OSSpinLockUnlock", "___maskrune",
+            "_asl_close", "_asl_free", "_asl_new", "_asl_open", "_asl_send",
+            "_asl_set", "_asl_log",
+        ]
+        try register(names: inertZero) { shims in
+            try shims.setReturn(0)
+        }
+
         // errno cell + stack guard + well-known const addresses
         errnoAddress = dataCursor
         dataCursor += 8
