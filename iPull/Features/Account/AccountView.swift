@@ -57,6 +57,15 @@ struct AccountView: View {
                     .disabled(viewModel.isWorking || viewModel.email.isEmpty || viewModel.password.isEmpty)
                 }
 
+                // First sign-in downloads the SAP assets (~1.2 GB from Apple).
+                if viewModel.isWorking && !viewModel.needsTwoFactor {
+                    Section {
+                        Label("Preparing secure signing… this can take a few minutes on first sign-in.",
+                              systemImage: "arrow.down.circle")
+                            .font(.footnote).foregroundStyle(.secondary)
+                    }
+                }
+
                 Section {
                     Text("Your credentials are sent only to Apple. iPull has no server. Your password is never stored; the session token is kept in the iOS Keychain on this device.")
                         .font(.footnote).foregroundStyle(.secondary)
