@@ -105,6 +105,8 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/v')
         run: |
           TAG_VERSION="${GITHUB_REF_NAME#v}"
+          # Strip a trailing letter suffix (e.g. v0.2.13b → 0.2.13)
+          TAG_VERSION="${TAG_VERSION%%[a-z]}"
           PLIST_VERSION=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" iPull/Resources/Info.plist)
           echo "tag=$TAG_VERSION plist=$PLIST_VERSION"
           if [ "$TAG_VERSION" != "$PLIST_VERSION" ]; then
