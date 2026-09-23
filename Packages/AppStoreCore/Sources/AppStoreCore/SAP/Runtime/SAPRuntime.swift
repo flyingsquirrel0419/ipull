@@ -321,10 +321,16 @@ public final class SAPRuntime {
     private func consumeOutput(pointerField: UInt64, lengthField: UInt64) throws -> Data {
         let pointer = try readUInt64(at: pointerField)
         let length = try readUInt64(at: lengthField)
-        guard length > 0, length <= Self.scratchSize else {
-            throw Error.guestFault("output length \(length)")
+
+        var output = Data()
+        if length > 0 && length <= Self.scratchSize && pointer != 0 {
+            output = try engine.read(address: pointer, size: Int(length))
         }
-        return try engine.read(address: pointer, size: Int(length))
+        // The guest heap-allocated the output buffer; hand it back (dispose).
+        if pointer != 0, let disposeEntry = entries[Self.entryNames[4]], disposeEntry != 0 {
+            _ = try? invoke(disposeEntry, pointer)
+        }
+        return output
     }
 
     private func readUInt32(at address: UInt64) throws -> UInt32 {
