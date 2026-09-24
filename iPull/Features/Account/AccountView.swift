@@ -130,12 +130,19 @@ struct AccountView: View {
                 if let progress = environment.authenticationProgress {
                     switch progress {
                     case .downloadingAssets(let completed, let total):
-                        VStack(alignment: .leading, spacing: 8) {
-                            Label("Downloading sign-in assets from Apple", systemImage: "arrow.down.circle")
-                            ProgressView(value: Double(completed), total: Double(max(total, 1)))
-                            Text(downloadDetail(completed: completed, total: total))
-                                .font(.footnote)
-                                .foregroundStyle(.secondary)
+                        TimelineView(.periodic(from: .now, by: 1)) { context in
+                            VStack(alignment: .leading, spacing: 8) {
+                                Label(completed == 0 ? "Connecting to Apple download server…" :
+                                        "Downloading sign-in assets from Apple", systemImage: "arrow.down.circle")
+                                if completed == 0 {
+                                    ProgressView()
+                                } else {
+                                    ProgressView(value: Double(completed), total: Double(max(total, 1)))
+                                }
+                                Text(downloadDetail(completed: completed, total: total, now: context.date))
+                                    .font(.footnote)
+                                    .foregroundStyle(.secondary)
+                            }
                         }
                     case .extractingAssets:
                         Label("Preparing downloaded sign-in assets…", systemImage: "archivebox")
@@ -174,13 +181,18 @@ struct AccountView: View {
         }
     }
 
-    private func downloadDetail(completed: Int64, total: Int64) -> String {
+    private func downloadDetail(completed: Int64, total: Int64, now: Date) -> String {
         let received = ByteCountFormatter.string(fromByteCount: completed, countStyle: .file)
         let expected = ByteCountFormatter.string(fromByteCount: total, countStyle: .file)
         guard let started = environment.sapDownloadStartedAt else {
             return "\(received) / \(expected)"
         }
-        let elapsed = Date().timeIntervalSince(started)
+        let elapsed = now.timeIntervalSince(started)
+        if completed == 0 {
+            return elapsed >= 30
+                ? "No data yet after \(Int(elapsed)) seconds. Checking the connection and retrying if needed."
+                : "Waiting for the first data… \(Int(max(0, elapsed))) seconds"
+        }
         guard elapsed >= 5, completed >= 1_048_576, total > completed else {
             return "\(received) / \(expected) · Estimating time remaining…"
         }

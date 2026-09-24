@@ -2,6 +2,15 @@
 
 All notable, user-visible changes are listed here. Dates are ISO 8601.
 
+## [0.3.3] - 2026-09-24
+
+### Fixed
+
+- Download first sign-in assets in small verified ranges, retrying stalled
+  ranges without restarting the entire package.
+- Show connection wait time before the first bytes arrive and retry idle
+  range requests sooner.
+
 ## [0.3.2] - 2026-09-24
 
 ### Changed

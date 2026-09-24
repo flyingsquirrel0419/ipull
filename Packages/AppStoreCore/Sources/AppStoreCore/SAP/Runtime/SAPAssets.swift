@@ -183,8 +183,11 @@ public final class SAPAssets: SAPAssetProviding, @unchecked Sendable {
                     progress?(.extracting)
                     let package = try Data(contentsOf: tempURL, options: .mappedIfSafe)
                     return try extractFrom(package: package)
+                } catch SAPAssetsError.downloadFailed {
+                    Log.info(.auth, "range download unsupported; trying single stream")
                 } catch {
-                    Log.error(.auth, "parallel download failed; falling back: \(String(describing: type(of: error)))")
+                    Log.error(.auth, "parallel download failed: \(String(describing: type(of: error)))")
+                    throw error
                 }
             }
         }
@@ -245,10 +248,12 @@ public final class SAPAssets: SAPAssetProviding, @unchecked Sendable {
         }
     }
 
-    /// Parallel ranged download (swcdn supports Range): N concurrent range
-    /// GETs to per-part files, then concatenate in order.
-    private func performParallelDownload(request base: HTTPRequest, to destination: URL, totalSize: Int64) async throws {
+    /// Download small ranges so a stalled request can be retried without
+    /// discarding hundreds of megabytes of already received data.
+    func performParallelDownload(request base: HTTPRequest, to destination: URL, totalSize: Int64,
+                                 rangeSize: Int64 = 16 * 1_048_576) async throws {
         let parts = 2
+        precondition(rangeSize > 0 && totalSize >= 2)
         let chunkSize = totalSize / Int64(parts)
         let combinedProgress = progress.map { SAPDownloadProgress(parts: parts, total: totalSize, report: $0) }
         combinedProgress?.update(part: 0, bytes: 0)
@@ -264,40 +269,58 @@ public final class SAPAssets: SAPAssetProviding, @unchecked Sendable {
                 partURLs.append(partURL)
 
                 group.addTask { [http] in
-                    // Retry each part up to 4 times, resuming from the partial file.
-                    var lastError: Error?
-                    for attempt in 1...4 {
-                        var partRequest = HTTPRequest(url: base.url, headers: base.headers)
-                        if let existing = try? FileManager.default.attributesOfItem(atPath: partURL.path),
-                           let size = existing[.size] as? Int64, size > 0 {
-                            let resumeFrom = start + size
-                            guard resumeFrom <= end else { break }
-                            partRequest.headers["Range"] = "bytes=\(resumeFrom)-\(end)"
-                            combinedProgress?.update(part: index, bytes: size)
-                            Log.info(.auth, "part \(index) resume from \(size / 1_048_576) MB (attempt \(attempt))")
-                        } else {
-                            partRequest.headers["Range"] = "bytes=\(start)-\(end)"
-                        }
-                        guard let streaming = http as? StreamingHTTPClient else {
-                            throw SAPAssetsError.downloadFailed("range request required")
-                        }
-                        do {
-                            let response = try await streaming.download(partRequest, to: partURL) { written, _ in
-                                combinedProgress?.update(part: index, bytes: written)
-                            }
-                            guard response.statusCode == 206 else {
-                                throw SAPAssetsError.downloadFailed("range request returned \(response.statusCode)")
-                            }
-                            lastError = nil
-                            combinedProgress?.update(part: index, bytes: end - start + 1)
-                            break
-                        } catch {
-                            combinedProgress?.update(part: index, bytes: 0)
-                            lastError = error
-                            Log.error(.auth, "part \(index) attempt \(attempt) failed: \(String(describing: type(of: error)))")
-                        }
+                    guard let streaming = http as? StreamingHTTPClient else {
+                        throw SAPAssetsError.downloadFailed("range request required")
                     }
-                    if let lastError { throw lastError }
+                    guard FileManager.default.createFile(atPath: partURL.path, contents: nil) else {
+                        throw SAPAssetsError.downloadFailed("could not create part file")
+                    }
+                    let output = try FileHandle(forWritingTo: partURL)
+                    defer { try? output.close() }
+                    let rangeURL = FileManager.default.temporaryDirectory
+                        .appendingPathComponent("ipull-sap-range-\(UUID().uuidString)")
+                    defer { try? FileManager.default.removeItem(at: rangeURL) }
+
+                    var offset = start
+                    while offset <= end {
+                        try Task.checkCancellation()
+                        let rangeEnd = min(end, offset + rangeSize - 1)
+                        let completed = offset - start
+                        var lastError: Error?
+                        for attempt in 1...4 {
+                            var rangeRequest = HTTPRequest(url: base.url, headers: base.headers)
+                            rangeRequest.headers["Range"] = "bytes=\(offset)-\(rangeEnd)"
+                            do {
+                                let response = try await streaming.download(rangeRequest, to: rangeURL) { written, _ in
+                                    combinedProgress?.update(part: index, bytes: completed + written)
+                                }
+                                let expectedRange = "bytes \(offset)-\(rangeEnd)/\(totalSize)"
+                                let length = rangeEnd - offset + 1
+                                let actualLength = (try FileManager.default.attributesOfItem(atPath: rangeURL.path)[.size] as? NSNumber)?.int64Value
+                                guard response.statusCode == 206,
+                                      response.header("Content-Range") == expectedRange,
+                                      actualLength == length else {
+                                    throw SAPAssetsError.downloadFailed("invalid range response")
+                                }
+                                let input = try FileHandle(forReadingFrom: rangeURL)
+                                defer { try? input.close() }
+                                while let data = try input.read(upToCount: 1_048_576), !data.isEmpty {
+                                    try output.write(contentsOf: data)
+                                }
+                                try FileManager.default.removeItem(at: rangeURL)
+                                combinedProgress?.update(part: index, bytes: completed + length)
+                                lastError = nil
+                                break
+                            } catch {
+                                combinedProgress?.update(part: index, bytes: completed)
+                                if Task.isCancelled { throw error }
+                                lastError = error
+                                Log.error(.auth, "part \(index) range attempt \(attempt) failed: \(String(describing: type(of: error)))")
+                            }
+                        }
+                        if let lastError { throw lastError }
+                        offset = rangeEnd + 1
+                    }
                 }
             }
             try await group.waitForAll()
