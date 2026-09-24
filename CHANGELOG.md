@@ -2,6 +2,15 @@
 
 All notable, user-visible changes are listed here. Dates are ISO 8601.
 
+## [0.3.10] - 2026-09-24
+
+### Changed
+
+- Log the numeric failureType and symbolic customerMessage from Apple's
+  authenticate response so account-side rejections (wrong password,
+  disabled account, extra verification) are diagnosable from the on-device
+  log without a crash report.
+
 ## [0.3.9] - 2026-09-24
 
 ### Added

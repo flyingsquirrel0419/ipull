@@ -190,9 +190,13 @@ public final class AuthenticationService: AuthenticationServicing, @unchecked Se
                 Log.error(.auth, "malformed auth response body (\(response.data.count) bytes)")
                 throw AppStoreError.unknown("Malformed authentication response")
             }
-            // Branch on key presence only; the payload can carry account
-            // details that must not reach the log.
-            Log.info(.auth, "auth response received; failureType: \(plist["failureType"] != nil), customerMessage: \(plist["customerMessage"] != nil)")
+            // failureType is a numeric code and customerMessage a symbolic
+            // key (e.g. MZFinance.BadLogin.Configurator_message) — neither is
+            // sensitive. Log them so account-side rejections are diagnosable
+            // without the raw payload (which can carry account details).
+            let rawFailure = plist["failureType"]
+            let rawMessage = plist["customerMessage"]
+            Log.info(.auth, "auth response received; failureType=\(rawFailure ?? "<none>"), customerMessage=\(rawMessage ?? "<none>")")
 
             let failureType = plist["failureType"] as? String
             let customerMessage = plist["customerMessage"] as? String
