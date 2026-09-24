@@ -120,19 +120,18 @@ public final class AuthenticationService: AuthenticationServicing, @unchecked Se
 
         // Allow the normal retry and redirect in addition to rate-limit retries.
         for _ in 0..<(4 + Self.maxRateLimitRetries) {
-            let requestAttempt = redirectHop ? 1 : attempt
             let passwordField = password + (normalizedCode ?? "")
             let body = try Self.authRequestBody(
                 appleID: trimmedEmail,
                 password: passwordField,
                 guid: guid,
-                attempt: requestAttempt
+                twoFactor: normalizedCode != nil
             )
             let signature: String
             do {
                 progress?(.signingRequest)
                 signature = try await signer.sign(body: body)
-                Log.info(.auth, "SAP signature produced (attempt \(requestAttempt))")
+                Log.info(.auth, "SAP signature produced")
             } catch {
                 // Log only the error type: emulator errors may embed the
                 // signed body, which contains the password in percent-encoded
@@ -286,11 +285,15 @@ public final class AuthenticationService: AuthenticationServicing, @unchecked Se
     /// XML plist with appleId, password (+2FA appended), guid, attempt, rmp,
     /// why. The Content-Type stays form-urlencoded — that is what Apple's
     /// servers expect despite the plist body.
-    static func authRequestBody(appleID: String, password: String, guid: String, attempt: Int) throws -> Data {
+    static func authRequestBody(appleID: String, password: String, guid: String,
+                                twoFactor: Bool) throws -> Data {
         try PropertyListSerialization.data(
             fromPropertyList: [
                 "appleId": appleID,
-                "attempt": String(attempt),
+                // Original desktop flow (ipatool): attempt "4" for the first
+                // sign-in, "2" when a 2FA code is appended.
+                "attempt": twoFactor ? "2" : "4",
+                "createSession": "true",
                 "guid": guid,
                 "password": password,
                 "rmp": "0",

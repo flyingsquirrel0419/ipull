@@ -89,6 +89,10 @@ final class AuthenticationFlowTests: XCTestCase {
         XCTAssertEqual(plist["password"] as? String, "pw")
         XCTAssertEqual(plist["guid"] as? String, "AABBCCDDEEFF")
         XCTAssertEqual(plist["why"] as? String, "signIn")
+        // Original desktop flow: first sign-in sends attempt "4" with
+        // createSession "true"; the 2FA retry sends attempt "2".
+        XCTAssertEqual(plist["attempt"] as? String, "4")
+        XCTAssertEqual(plist["createSession"] as? String, "true")
     }
 
     final class StubSigner: SAPSigning, @unchecked Sendable {

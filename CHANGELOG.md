@@ -2,6 +2,14 @@
 
 All notable, user-visible changes are listed here. Dates are ISO 8601.
 
+## [0.3.15] - 2026-09-24
+
+### Fixed
+
+- Match the original desktop auth request exactly: attempt "4" (or "2" with
+  a two-factor code) and createSession "true" in the plist body. The generic
+  attempt counter made Apple answer authenticate with a persistent 404.
+
 ## [0.3.14] - 2026-09-24
 
 ### Fixed
