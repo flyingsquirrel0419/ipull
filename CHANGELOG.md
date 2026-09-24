@@ -2,6 +2,14 @@
 
 All notable, user-visible changes are listed here. Dates are ISO 8601.
 
+## [0.3.17] - 2026-09-24
+
+### Changed
+
+- Log the authenticate response's server identity headers (server,
+  x-apple-request-uuid) so the intermittent empty 404 can be tied to the
+  Apple edge node that answered.
+
 ## [0.3.16] - 2026-09-24
 
 ### Changed

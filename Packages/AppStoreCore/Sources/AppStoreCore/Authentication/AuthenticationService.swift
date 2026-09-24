@@ -153,7 +153,9 @@ public final class AuthenticationService: AuthenticationServicing, @unchecked Se
             do {
                 progress?(.authenticating)
                 response = try await http.send(request, body: body)
-                Log.info(.auth, "authenticate response HTTP \(response.statusCode)")
+                let serverHint = [response.header("server"), response.header("x-apple-request-uuid"),
+                                  response.header("x-daiquiri-instance")].compactMap { $0 }.joined(separator: " ")
+                Log.info(.auth, "authenticate response HTTP \(response.statusCode)\(serverHint.isEmpty ? "" : " [\(serverHint)]")")
             } catch {
                 Log.error(.auth, "authenticate request failed: \(String(describing: type(of: error)))")
                 throw error
