@@ -177,6 +177,22 @@ public final class AuthenticationService: AuthenticationServicing, @unchecked Se
                 throw AppStoreError.rateLimited(retryAfterSeconds: retryAfter)
             }
 
+            // Apple intermittently answers authenticate with an empty 404
+            // (transient; observed on-device right after the 2FA prompt).
+            // Retry it like a rate limit, with backoff.
+            if response.statusCode == 404 && response.data.isEmpty {
+                if rateLimitRetries < Self.maxRateLimitRetries {
+                    rateLimitRetries += 1
+                    let delay = min(UInt64(1) << (rateLimitRetries - 1), Self.rateLimitMaxDelaySeconds)
+                    Log.info(.auth, "authenticate empty 404; retry \(rateLimitRetries) after \(delay)s")
+                    progress?(.retryingAfterRateLimit(seconds: delay))
+                    await sleep(delay * 1_000_000_000)
+                    continue
+                }
+                Log.error(.auth, "authenticate still 404 after \(rateLimitRetries) retries")
+                throw AppStoreError.networkUnavailable
+            }
+
             if response.statusCode == 302,
                let location = response.header("Location"),
                let redirectURL = URL(string: location) {

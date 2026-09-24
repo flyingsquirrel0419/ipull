@@ -2,6 +2,15 @@
 
 All notable, user-visible changes are listed here. Dates are ISO 8601.
 
+## [0.3.12] - 2026-09-24
+
+### Fixed
+
+- Retry the authenticate request when Apple answers with a transient empty
+  HTTP 404 (observed immediately after the two-factor prompt). The retry
+  reuses the backoff used for rate limiting, so a two-factor code is no
+  longer consumed by a failed retry.
+
 ## [0.3.11] - 2026-09-24
 
 ### Fixed
