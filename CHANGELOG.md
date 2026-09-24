@@ -2,6 +2,15 @@
 
 All notable, user-visible changes are listed here. Dates are ISO 8601.
 
+## [0.3.5] - 2026-09-24
+
+### Changed
+
+- Summarize deferred SAP imports in one diagnostic line instead of logging
+  every unused import as an error. Log a specific symbol if it is called.
+- Verify real-package extraction, Apple SAP setup, and request signing in
+  an opt-in integration test.
+
 ## [0.3.4] - 2026-09-24
 
 ### Fixed

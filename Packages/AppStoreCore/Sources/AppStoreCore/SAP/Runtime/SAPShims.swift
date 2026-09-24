@@ -112,6 +112,7 @@ public final class SAPShims {
         try engine.write(address: address, data: Data([0xC3]))
         codeCursor += Self.slotSize
         let entry = Entry(names: [symbol], handler: { shims in
+            Log.error(.auth, "SAP invoked unsupported import: \(symbol)")
             shims.fault = .dispatchFailed("unsupported import: \(symbol)")
             throw Error.dispatchFailed("unsupported import: \(symbol)")
         }, address: address)

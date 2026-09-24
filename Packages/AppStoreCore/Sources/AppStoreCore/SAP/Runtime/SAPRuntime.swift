@@ -129,16 +129,20 @@ public final class SAPRuntime {
         }
         entries = exports
 
+        var deferredImports = Set<String>()
         let resolve: (String) throws -> UInt64 = { [shims] name in
             if let address = exports[name] { return address }
             if let known = shims.address(of: name) { return known }
-            Log.error(.auth, "genuinely unregistered import: \(name)")
+            // Mach-O binds include imports from code paths we never execute.
+            // The trap reports the symbol only if the guest actually calls it.
+            deferredImports.insert(name)
             return try shims.resolve(name)
         }
 
         try coreFP.relocate(loadBase: Self.coreFPBase, resolve: resolve)
         try commerceCore.relocate(loadBase: Self.commerceCoreBase, resolve: resolve)
         try commerceKit.relocate(loadBase: Self.commerceKitBase, resolve: resolve)
+        Log.info(.auth, "SAP images linked; \(deferredImports.count) unused imports deferred")
 
         let memory = EngineMemory(engine: engine)
         try coreFP.load(into: memory)
