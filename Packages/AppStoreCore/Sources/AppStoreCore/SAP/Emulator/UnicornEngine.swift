@@ -4,7 +4,8 @@ import CUnicorn
 /// Swift wrapper over the CUnicorn ABI — an x86-64 emulator session with
 /// mapped memory, registers, and code hooks. Used by the SAP runtime to
 /// execute Apple's signing binary under emulation on non-jailbroken iOS
-/// (Unicorn 2 uses precompiled TCG, no JIT, no private entitlements).
+/// (Unicorn is built in TCG interpreter mode: no executable memory, so it
+/// runs under LiveContainer without JIT).
 public final class UnicornEngine {
 
     public enum Error: Swift.Error, Equatable {

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Build libunicorn (x86_64 emulator core) as a static library for iOS.
-# Unicorn 2 uses precompiled TCG — no JIT, no private entitlements needed.
+# Built in TCG interpreter (TCI) mode so it never allocates executable
+# memory: it runs under LiveContainer without JIT enabled.
 set -euo pipefail
 
 UNICORN_VERSION="2.1.3"
@@ -8,6 +9,7 @@ BUILD_DIR="$(pwd)/build/unicorn"
 SRC_DIR="${BUILD_DIR}/src"
 PREFIX_DEVICE="${BUILD_DIR}/iphoneos"
 PREFIX_SIM="${BUILD_DIR}/iphonesimulator"
+PATCH_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/unicorn-tci" && pwd)"
 
 mkdir -p "${SRC_DIR}"
 
@@ -16,6 +18,23 @@ if [ ! -d "${SRC_DIR}/unicorn-${UNICORN_VERSION}" ]; then
     -o "${SRC_DIR}/unicorn.tar.gz"
   tar -xzf "${SRC_DIR}/unicorn.tar.gz" -C "${SRC_DIR}"
 fi
+
+# Apply the TCG interpreter (TCI) backport (Naville/unicorn feature/tci,
+# 4 commits on top of 2.1.3, vendored in ci/unicorn-tci) so the core runs
+# without executable memory. Idempotent: skipped when already applied.
+apply_tci() {
+  local root="${SRC_DIR}/unicorn-${UNICORN_VERSION}"
+  if [ -f "${root}/qemu/tcg/tci.c" ]; then
+    return
+  fi
+  (cd "${root}" && patch -p1 < "${PATCH_DIR}/tci-2.1.3.patch")
+  cp -R "${PATCH_DIR}/qemu/tcg/tci.c" "${root}/qemu/tcg/tci.c"
+  mkdir -p "${root}/qemu/tcg/tci"
+  cp "${PATCH_DIR}/qemu/tcg/tci/README" "${PATCH_DIR}/qemu/tcg/tci/tcg-target.h" \
+     "${PATCH_DIR}/qemu/tcg/tci/tcg-target.inc.c" "${root}/qemu/tcg/tci/"
+}
+
+apply_tci
 
 build_for() {
   local sdk="$1" prefix="$2"
@@ -27,6 +46,7 @@ build_for() {
     -DCMAKE_OSX_ARCHITECTURES="arm64" \
     -DUNICORN_BUILD_SHARED=OFF \
     -DUNICORN_ARCH=x86 \
+    -DUNICORN_INTERPRETER=ON \
     -DCMAKE_BUILD_TYPE=Release
   cmake --build "${BUILD_DIR}/${sdk}" -j"$(sysctl -n hw.ncpu)"
   mkdir -p "${prefix}/lib" "${prefix}/include"
@@ -39,7 +59,11 @@ build_for iphonesimulator "${PREFIX_SIM}"
 
 # Host (macOS) build for running package tests on the runner.
 PREFIX_MACOS="${BUILD_DIR}/macos"
-cmake -S "${SRC_DIR}/unicorn-${UNICORN_VERSION}" -B "${BUILD_DIR}/macos"   -DUNICORN_BUILD_SHARED=OFF   -DUNICORN_ARCH=x86   -DCMAKE_BUILD_TYPE=Release
+cmake -S "${SRC_DIR}/unicorn-${UNICORN_VERSION}" -B "${BUILD_DIR}/macos" \
+  -DUNICORN_BUILD_SHARED=OFF \
+  -DUNICORN_ARCH=x86 \
+  -DUNICORN_INTERPRETER=ON \
+  -DCMAKE_BUILD_TYPE=Release
 cmake --build "${BUILD_DIR}/macos" -j"$(sysctl -n hw.ncpu)"
 mkdir -p "${PREFIX_MACOS}/lib" "${PREFIX_MACOS}/include"
 cp "${BUILD_DIR}/macos/libunicorn.a" "${PREFIX_MACOS}/lib/"

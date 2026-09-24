@@ -2,6 +2,15 @@
 
 All notable, user-visible changes are listed here. Dates are ISO 8601.
 
+## [0.3.7] - 2026-09-24
+
+### Fixed
+
+- Build the SAP emulator (Unicorn) in TCG interpreter mode so guest signing
+  code no longer needs executable memory. Sign-in no longer exits at
+  "SAP entering guest initialization" when running under LiveContainer
+  without JIT enabled.
+
 ## [0.3.6] - 2026-09-24
 
 ### Changed
