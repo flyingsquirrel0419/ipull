@@ -120,7 +120,9 @@ public final class AppEnvironment: ObservableObject {
                 needsTwoFactorCode = false
                 return .success(session)
             case .twoFactorRequired:
+                Log.info(.auth, "two-factor required; prompting for code")
                 needsTwoFactorCode = true
+                Log.info(.auth, "two-factor prompt shown")
                 return .failure(.twoFactorRequired)
             }
         } catch let error as AppStoreError {

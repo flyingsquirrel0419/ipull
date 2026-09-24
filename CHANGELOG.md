@@ -2,6 +2,15 @@
 
 All notable, user-visible changes are listed here. Dates are ISO 8601.
 
+## [0.3.9] - 2026-09-24
+
+### Added
+
+- Record uncaught exceptions and fatal signals in the on-device log file.
+  LiveContainer terminates the app without a crash report, so the log now
+  captures the reason when the two-factor prompt (or anything else) kills
+  the process. Log lines mark each step of the two-factor handoff.
+
 ## [0.3.8] - 2026-09-24
 
 ### Fixed
