@@ -127,9 +127,9 @@ struct AccountView: View {
         }
         if environment.isAuthenticating && !environment.needsTwoFactorCode {
             Section {
-                if let progress = environment.sapAssetProgress {
+                if let progress = environment.authenticationProgress {
                     switch progress {
-                    case .downloading(let completed, let total):
+                    case .downloadingAssets(let completed, let total):
                         VStack(alignment: .leading, spacing: 8) {
                             Label("Downloading sign-in assets from Apple", systemImage: "arrow.down.circle")
                             ProgressView(value: Double(completed), total: Double(max(total, 1)))
@@ -137,10 +137,17 @@ struct AccountView: View {
                                 .font(.footnote)
                                 .foregroundStyle(.secondary)
                         }
-                    case .extracting:
+                    case .extractingAssets:
                         Label("Preparing downloaded sign-in assets…", systemImage: "archivebox")
                             .font(.footnote)
                             .foregroundStyle(.secondary)
+                    default:
+                        HStack(spacing: 10) {
+                            ProgressView()
+                            Text(progressTitle(progress))
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+                        }
                     }
                 } else {
                     Label("Preparing secure signing… first sign-in downloads assets from Apple.",
@@ -149,6 +156,21 @@ struct AccountView: View {
                         .foregroundStyle(.secondary)
                 }
             }
+        }
+    }
+
+    private func progressTitle(_ progress: AuthenticationProgress) -> String {
+        switch progress {
+        case .fetchingConfiguration: "Checking Apple service settings…"
+        case .fetchingCertificate: "Getting Apple's signing certificate…"
+        case .downloadingAssets: "Downloading sign-in assets from Apple…"
+        case .extractingAssets: "Preparing downloaded sign-in assets…"
+        case .initializingSigner: "Initializing secure signing…"
+        case .establishingSession: "Establishing secure signing session…"
+        case .signingRequest: "Signing authentication request…"
+        case .authenticating: "Waiting for Apple's sign-in response…"
+        case .retryingAfterRateLimit(let seconds): "Apple is busy. Retrying in \(seconds) seconds…"
+        case .savingSession: "Saving your session securely…"
         }
     }
 

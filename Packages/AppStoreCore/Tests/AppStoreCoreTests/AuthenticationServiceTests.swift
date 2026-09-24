@@ -28,6 +28,43 @@ final class AuthenticationServiceTests: XCTestCase {
         try! PropertyListSerialization.data(fromPropertyList: dict, format: .xml, options: 0)
     }
 
+    final class ProgressRecorder: @unchecked Sendable {
+        private let lock = NSLock()
+        private var storage: [AuthenticationProgress] = []
+
+        func record(_ progress: AuthenticationProgress) {
+            lock.lock()
+            storage.append(progress)
+            lock.unlock()
+        }
+
+        var values: [AuthenticationProgress] {
+            lock.lock()
+            defer { lock.unlock() }
+            return storage
+        }
+    }
+
+    func testSignInReportsActualStagesInOrder() async throws {
+        let http = MockHTTP()
+        http.responses = [HTTPResponse(
+            statusCode: 200,
+            headers: ["X-Set-Apple-Store-Front": "143441-1,29"],
+            data: plist(["dsPersonId": "1", "passwordToken": "tok"])
+        )]
+        let recorder = ProgressRecorder()
+        let service = AuthenticationService(
+            http: http, bagProvider: MockBag(), signer: MockSigner(),
+            secrets: InMemorySecretStore(), guidProvider: { "AABBCCDDEEFF" },
+            progress: { recorder.record($0) }
+        )
+
+        _ = try await service.signIn(email: "u@e.com", password: "pw", twoFactorCode: nil)
+        XCTAssertEqual(recorder.values, [
+            .fetchingConfiguration, .signingRequest, .authenticating, .savingSession,
+        ])
+    }
+
     private func makeService(http: MockHTTP) -> AuthenticationService {
         AuthenticationService(
             http: http,

@@ -26,6 +26,7 @@ public actor EmulatedSAPSigner: SAPSigning {
     private let bagProvider: BagProviding
     private let assetProvider: SAPAssetProviding
     private let hardwareID: Data
+    private let progress: (@Sendable (AuthenticationProgress) -> Void)?
 
     private var runtime: SAPRuntime?
     private var context: UInt64 = 0
@@ -33,11 +34,13 @@ public actor EmulatedSAPSigner: SAPSigning {
     private var inflight: Task<Void, Error>?
 
     public init(http: HTTPClient, bagProvider: BagProviding,
-                assetProvider: SAPAssetProviding, hardwareID: Data) {
+                assetProvider: SAPAssetProviding, hardwareID: Data,
+                progress: (@Sendable (AuthenticationProgress) -> Void)? = nil) {
         self.http = http
         self.bagProvider = bagProvider
         self.assetProvider = assetProvider
         self.hardwareID = hardwareID
+        self.progress = progress
     }
 
     public func sign(body: Data) async throws -> String {
@@ -87,6 +90,7 @@ public actor EmulatedSAPSigner: SAPSigning {
         let version = UInt32(bag.sapVersion ?? "200") ?? 200
 
         // 1. Certificate
+        progress?(.fetchingCertificate)
         let certResponse = try await http.send(HTTPRequest(url: certURL), body: nil)
         guard certResponse.statusCode == 200,
               let certPlist = try? PropertyListSerialization.propertyList(from: certResponse.data, format: nil) as? [String: Any],
@@ -98,11 +102,13 @@ public actor EmulatedSAPSigner: SAPSigning {
 
         // 2. Assets + runtime
         let assets = try await assetProvider.load()
+        progress?(.initializingSigner)
         let runtime = try SAPRuntime(assets: assets, hardwareID: hardwareID)
         let context = try runtime.initialize(hardwareID: hardwareID)
         Log.info(.auth, "SAP session initialized")
 
         // 3. First exchange with the certificate
+        progress?(.establishingSession)
         let (request, _) = try runtime.exchange(
             version: version, hardwareID: hardwareID, context: context, input: certificate
         )

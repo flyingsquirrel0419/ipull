@@ -16,6 +16,19 @@ public enum AuthenticationResult: Sendable, Equatable {
     case twoFactorRequired
 }
 
+public enum AuthenticationProgress: Sendable, Equatable {
+    case fetchingConfiguration
+    case fetchingCertificate
+    case downloadingAssets(completedBytes: Int64, totalBytes: Int64)
+    case extractingAssets
+    case initializingSigner
+    case establishingSession
+    case signingRequest
+    case authenticating
+    case retryingAfterRateLimit(seconds: UInt64)
+    case savingSession
+}
+
 public protocol AuthenticationServicing: Sendable {
     func signIn(email: String, password: String, twoFactorCode: String?) async throws -> AuthenticationResult
     func signOut() async throws
@@ -47,6 +60,7 @@ public final class AuthenticationService: AuthenticationServicing, @unchecked Se
     private let secrets: SecretStore
     private let guidProvider: @Sendable () throws -> String
     private let sleep: @Sendable (UInt64) async -> Void
+    private let progress: (@Sendable (AuthenticationProgress) -> Void)?
 
     public init(
         http: HTTPClient,
@@ -54,7 +68,8 @@ public final class AuthenticationService: AuthenticationServicing, @unchecked Se
         signer: SAPSigning,
         secrets: SecretStore,
         guidProvider: @escaping @Sendable () throws -> String,
-        sleep: (@Sendable (UInt64) async -> Void)? = nil
+        sleep: (@Sendable (UInt64) async -> Void)? = nil,
+        progress: (@Sendable (AuthenticationProgress) -> Void)? = nil
     ) {
         self.http = http
         self.bagProvider = bagProvider
@@ -64,6 +79,7 @@ public final class AuthenticationService: AuthenticationServicing, @unchecked Se
         self.sleep = sleep ?? { ns in
             try? await Task.sleep(nanoseconds: ns)
         }
+        self.progress = progress
     }
 
     public func signIn(email: String, password: String, twoFactorCode: String?) async throws -> AuthenticationResult {
@@ -83,6 +99,7 @@ public final class AuthenticationService: AuthenticationServicing, @unchecked Se
         }
 
         let guid = try guidProvider()
+        progress?(.fetchingConfiguration)
         Log.info(.auth, "sign-in start (guid resolved)")
         let bag: Bag
         do {
@@ -113,6 +130,7 @@ public final class AuthenticationService: AuthenticationServicing, @unchecked Se
             )
             let signature: String
             do {
+                progress?(.signingRequest)
                 signature = try await signer.sign(body: body)
                 Log.info(.auth, "SAP signature produced (attempt \(requestAttempt))")
             } catch {
@@ -133,6 +151,7 @@ public final class AuthenticationService: AuthenticationServicing, @unchecked Se
             )
             let response: HTTPResponse
             do {
+                progress?(.authenticating)
                 response = try await http.send(request, body: body)
                 Log.info(.auth, "authenticate response HTTP \(response.statusCode)")
             } catch {
@@ -150,6 +169,7 @@ public final class AuthenticationService: AuthenticationServicing, @unchecked Se
                     )
                     rateLimitRetries += 1
                     Log.info(.auth, "authenticate rate limited; retry \(rateLimitRetries) after \(delay)s")
+                    progress?(.retryingAfterRateLimit(seconds: delay))
                     await sleep(delay * 1_000_000_000)
                     continue
                 }
@@ -194,6 +214,7 @@ public final class AuthenticationService: AuthenticationServicing, @unchecked Se
                     pod: response.header("pod"),
                     passwordToken: token
                 )
+                progress?(.savingSession)
                 try persist(session: session)
                 return .success(session)
             }

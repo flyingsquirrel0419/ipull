@@ -2,6 +2,14 @@
 
 All notable, user-visible changes are listed here. Dates are ISO 8601.
 
+## [0.3.2] - 2026-09-24
+
+### Changed
+
+- Show each Apple Account sign-in stage, including service configuration,
+  certificate retrieval, signer setup, authentication, rate-limit retry,
+  and secure session saving. Asset download retains its progress and ETA.
+
 ## [0.3.1] - 2026-09-24
 
 ### Changed
