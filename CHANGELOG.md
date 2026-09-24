@@ -2,6 +2,13 @@
 
 All notable, user-visible changes are listed here. Dates are ISO 8601.
 
+## [0.3.13] - 2026-09-24
+
+### Changed
+
+- Log the auth endpoint host from the bag so a persistent empty 404 can be
+  matched to the pod Apple routed the account to.
+
 ## [0.3.12] - 2026-09-24
 
 ### Fixed

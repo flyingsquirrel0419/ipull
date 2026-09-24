@@ -104,7 +104,7 @@ public final class AuthenticationService: AuthenticationServicing, @unchecked Se
         let bag: Bag
         do {
             bag = try await bagProvider.bag(guid: guid)
-            Log.info(.auth, "bag fetched; auth endpoint host OK")
+            Log.info(.auth, "bag fetched; auth endpoint host \(bag.authEndpoint.host ?? "?")")
         } catch let error as AppStoreError {
             Log.error(.auth, "bag fetch failed: \(error) \(error.debugDetail ?? "")")
             throw error
