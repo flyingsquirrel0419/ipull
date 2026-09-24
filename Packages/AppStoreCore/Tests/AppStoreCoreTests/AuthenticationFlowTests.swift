@@ -38,8 +38,12 @@ final class AuthenticationFlowTests: XCTestCase {
                 return HTTPResponse(statusCode: 200, headers: [:], data: data)
             }
             if url.contains("buy.itunes.apple.com") && url.contains("authenticate") {
-                // Apple answers 2FA-required via MZFinance.BadLogin.
-                let plist: [String: Any] = ["customerMessage": "MZFinance.BadLogin.Configurator_message"]
+                // Apple answers 2FA-required via MZFinance.BadLogin with an
+                // empty-string failureType (observed on-device, v0.3.10 log).
+                let plist: [String: Any] = [
+                    "failureType": "",
+                    "customerMessage": "MZFinance.BadLogin.Configurator_message",
+                ]
                 let data = try! PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0)
                 return HTTPResponse(statusCode: 200, headers: [:], data: data)
             }

@@ -2,6 +2,14 @@
 
 All notable, user-visible changes are listed here. Dates are ISO 8601.
 
+## [0.3.11] - 2026-09-24
+
+### Fixed
+
+- Treat an empty-string failureType in Apple's authenticate response as
+  absent. The two-factor prompt now appears instead of a sign-in failure
+  when Apple sends customerMessage=MZFinance.BadLogin with failureType="".
+
 ## [0.3.10] - 2026-09-24
 
 ### Changed

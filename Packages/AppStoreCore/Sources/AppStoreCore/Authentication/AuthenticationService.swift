@@ -198,8 +198,11 @@ public final class AuthenticationService: AuthenticationServicing, @unchecked Se
             let rawMessage = plist["customerMessage"]
             Log.info(.auth, "auth response received; failureType=\(rawFailure ?? "<none>"), customerMessage=\(rawMessage ?? "<none>")")
 
-            let failureType = plist["failureType"] as? String
-            let customerMessage = plist["customerMessage"] as? String
+            // Apple sends failureType as an empty string (not omitted) when
+            // only a customerMessage is present — treat "" as absent so the
+            // 2FA / account-disabled branches below can match.
+            let failureType = (plist["failureType"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+            let customerMessage = (plist["customerMessage"] as? String).flatMap { $0.isEmpty ? nil : $0 }
 
             if failureType == nil && customerMessage == nil,
                response.statusCode == 200,
