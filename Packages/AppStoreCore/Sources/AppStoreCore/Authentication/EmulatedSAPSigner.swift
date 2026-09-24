@@ -104,6 +104,7 @@ public actor EmulatedSAPSigner: SAPSigning {
         let assets = try await assetProvider.load()
         progress?(.initializingSigner)
         let runtime = try SAPRuntime(assets: assets, hardwareID: hardwareID)
+        Log.info(.auth, "SAP runtime ready; initializing session")
         let context = try runtime.initialize(hardwareID: hardwareID)
         Log.info(.auth, "SAP session initialized")
 

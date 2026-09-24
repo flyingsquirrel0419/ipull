@@ -10,8 +10,8 @@ import Foundation
 ///   CommerceCore  @ 0x0000100040000000
 ///   CommerceKit   @ 0x0000100080000000
 ///   shims         @ 0x0000200000000000
-///   scratch       @ 0x0000300000000000 (32 MB)
-///   heap          @ 0x0000400000000000 (64 MB)
+///   scratch       @ 0x0000300000000000 ( 8 MB)
+///   heap          @ 0x0000400000000000 (32 MB)
 ///   stack         @ 0x0000500000000000 ( 8 MB)
 ///   return trap   @ 0x0000000100000000 (HLT page)
 public final class SAPRuntime {
@@ -33,7 +33,7 @@ public final class SAPRuntime {
     static let commerceCoreBase: UInt64 = 0x0000100040000000
     static let commerceKitBase: UInt64 = 0x0000100080000000
     static let scratchBase: UInt64 = 0x0000300000000000
-    static let scratchSize: UInt64 = 32 << 20
+    static let scratchSize: UInt64 = 8 << 20
     static let stackBase: UInt64 = 0x0000500000000000
     static let stackSize: UInt64 = 8 << 20
     static let stackEnd: UInt64 = stackBase + stackSize
@@ -79,7 +79,6 @@ public final class SAPRuntime {
         shims.icxsData = assets.coreFPICXS
 
         // Trace the last executed instructions so a fault shows the path.
-        var trace: [UInt64] = []
         let tracePtr = Unmanaged.passRetained(TraceBox()).toOpaque()
         _ = try? engine.addCodeHook(begin: 0, end: UInt64.max, callback: { address, _, userData in
             guard let userData else { return }
@@ -145,9 +144,13 @@ public final class SAPRuntime {
         Log.info(.auth, "SAP images linked; \(deferredImports.count) unused imports deferred")
 
         let memory = EngineMemory(engine: engine)
+        Log.info(.auth, "SAP loading CoreFP into emulator")
         try coreFP.load(into: memory)
+        Log.info(.auth, "SAP loading CommerceCore into emulator")
         try commerceCore.load(into: memory)
+        Log.info(.auth, "SAP loading CommerceKit into emulator")
         try commerceKit.load(into: memory)
+        Log.info(.auth, "SAP images loaded into emulator")
 
         // Pre-register inert data slots for constant-object imports so binds
         // resolve them to valid guest memory instead of trap stubs.
@@ -180,6 +183,7 @@ public final class SAPRuntime {
         let contextField = try scratch(nil, size: 8)
         let hardwareAddress = try scratch(hardware, size: UInt64(hardware.count))
 
+        Log.info(.auth, "SAP entering guest initialization")
         let status = try invoke(entries[Self.entryNames[0]] ?? 0, contextField, hardwareAddress)
         guard Int32(truncatingIfNeeded: status) == 0 else {
             throw Error.initializeFailed(Int32(truncatingIfNeeded: status))

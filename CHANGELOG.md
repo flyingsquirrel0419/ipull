@@ -2,6 +2,15 @@
 
 All notable, user-visible changes are listed here. Dates are ISO 8601.
 
+## [0.3.6] - 2026-09-24
+
+### Changed
+
+- Reduce SAP emulator scratch and heap mappings from 96 MB to 40 MB to lower
+  sign-in memory use in LiveContainer.
+- Log image loading and guest initialization stages to locate an unexpected
+  process exit without requiring an iPull crash report.
+
 ## [0.3.5] - 2026-09-24
 
 ### Changed

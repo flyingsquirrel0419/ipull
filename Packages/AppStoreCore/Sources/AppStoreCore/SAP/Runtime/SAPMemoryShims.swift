@@ -7,7 +7,7 @@ import Foundation
 extension SAPShims {
 
     static let heapBase: UInt64 = 0x0000400000000000
-    static let heapSize: UInt64 = 64 << 20
+    static let heapSize: UInt64 = 32 << 20
     static let maxGuestTransfer: UInt64 = 64 << 20
 
     struct GuestAllocation {
