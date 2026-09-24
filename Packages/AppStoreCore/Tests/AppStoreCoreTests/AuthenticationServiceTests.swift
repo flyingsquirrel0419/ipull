@@ -410,6 +410,58 @@ final class AuthenticationServiceTests: XCTestCase {
         }
     }
 
+    func test302LocationBecomesEndpointVerbatim() async throws {
+        // A real 302 from Apple carries the full pod URL; the next request
+        // uses that exact Location, including its Pod/PRH query.
+        let podURL = "https://p35-buy.itunes.apple.com/WebObjects/MZFinance.woa/wa/authenticate?Pod=35&PRH=35"
+        let http = MockHTTP()
+        http.responses = [
+            HTTPResponse(statusCode: 302, headers: ["Location": podURL], data: Data()),
+            HTTPResponse(statusCode: 200,
+                headers: ["X-Set-Apple-Store-Front": "143441-1,29"],
+                data: plist(["dsPersonId": "1", "passwordToken": "tok"])),
+        ]
+        let service = AuthenticationService(
+            http: http,
+            bagProvider: MockBag(),
+            signerFactory: { _ in MockSigner() },
+            secrets: InMemorySecretStore(),
+            sleep: { _ in }
+        )
+
+        let result = try await service.signIn(email: "u@e.com", password: "pw", twoFactorCode: nil)
+        guard case .success = result else { return XCTFail("Expected success") }
+        XCTAssertEqual(http.requests.count, 2)
+        XCTAssertEqual(http.requests[1].url.absoluteString, podURL)
+        XCTAssertEqual(http.requests[1].url.host, "p35-buy.itunes.apple.com")
+    }
+
+    func testNonAppleRedirectIsRejected() async {
+        // A redirect outside Apple's authentication pods is refused; the
+        // endpoint must never become an arbitrary host.
+        let http = MockHTTP()
+        http.responses = [
+            HTTPResponse(statusCode: 302,
+                headers: ["Location": "https://example.com/steal"], data: Data()),
+        ]
+        let service = AuthenticationService(
+            http: http,
+            bagProvider: MockBag(),
+            signerFactory: { _ in MockSigner() },
+            secrets: InMemorySecretStore(),
+            sleep: { _ in }
+        )
+
+        do {
+            _ = try await service.signIn(email: "u@e.com", password: "pw", twoFactorCode: nil)
+            XCTFail("Expected rejection of non-Apple redirect")
+        } catch {
+            // Expected: BagService.validate throws; example.com never used.
+        }
+        XCTAssertEqual(http.requests.count, 1)
+        XCTAssertEqual(http.requests[0].url.host, "buy.itunes.apple.com")
+    }
+
     func testSessionNeverPrintsToken() {
         let session = AppleAccountSession(
             email: "u@e.com", displayName: "U", directoryServicesID: "1",

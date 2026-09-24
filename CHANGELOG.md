@@ -2,6 +2,17 @@
 
 All notable, user-visible changes are listed here. Dates are ISO 8601.
 
+## [0.3.29] - 2026-09-25
+
+### Added
+
+- Send-time endpoint invariant: every authenticate request is validated
+  against the Apple authentication host allowlist right before it hits
+  the network, so a malformed endpoint (for example a pod ID leaking
+  into the host field) can never produce host=20 style requests again.
+- Request logs now report podID (metadata) and redirectHost (an actual
+  Apple 302 Location) as separate fields instead of one ambiguous value.
+
 ## [0.3.28] - 2026-09-25
 
 ### Fixed

@@ -242,6 +242,10 @@ public final class AuthenticationService: AuthenticationServicing, @unchecked Se
                     "X-Apple-ActionSignature": signature,
                 ]
             )
+            // Invariant: a malformed endpoint (e.g. a pod ID leaking into
+            // the host field) must never reach the network layer. Only
+            // Apple authentication hosts are allowed.
+            try BagService.validate(authEndpoint: endpoint)
             requestSequence += 1
             let requestID = (normalizedCode == nil ? "AUTH-PW-" : "AUTH-2FA-") + String(format: "%04d", requestSequence)
             let endpointComponents = URLComponents(url: endpoint, resolvingAgainstBaseURL: false)
@@ -252,7 +256,7 @@ public final class AuthenticationService: AuthenticationServicing, @unchecked Se
                 + "path=\(endpoint.path) queryKeys=[\(queryKeys)] "
                 + "authLogicalAttempt=\(logicalAttempt) transportAttempt=\(transportAttempt) identityGeneration=\(identityGeneration) "
                 + "guidHash=\(Self.shortHash(of: guid)) machineIDHash=\(Self.shortHash(of: guid)) "
-                + "assignedPodID=\(assignedPodID ?? "nil") redirectURL=\(authenticationRedirectURL?.host ?? "nil") cookieCount=\(cookieNames.count) cookies=\(cookieNames.map { $0 + ":present" }.joined(separator: ","))")
+                + "podID=\(assignedPodID ?? "nil") redirectHost=\(authenticationRedirectURL?.host ?? "nil") cookieCount=\(cookieNames.count) cookies=\(cookieNames.map { $0 + ":present" }.joined(separator: ","))")
             let response: HTTPResponse
             do {
                 progress?(.authenticating)
