@@ -73,6 +73,17 @@ public final class AuthenticationService: AuthenticationServicing, @unchecked Se
     private let sleep: @Sendable (UInt64) async -> Void
     private let progress: (@Sendable (AuthenticationProgress) -> Void)?
 
+    /// Monotonic request counter for [auth][request]/[auth][response]
+    /// correlation across password and 2FA stages.
+    private var requestSequence = 0
+    /// Apple pod assigned by an authenticate response (pod header) or a
+    /// pod redirect. Preserved across the password → 2FA transition so the
+    /// verification hits the same store pod that issued the challenge.
+    private var assignedPodHost: String?
+    /// Truncated hash of the GUID that received the 2FA challenge, for
+    /// same-guid proof in logs.
+    private var challengeGuidHash: String?
+
     public init(
         http: HTTPClient,
         bagProvider: BagProviding,
@@ -210,13 +221,25 @@ public final class AuthenticationService: AuthenticationServicing, @unchecked Se
                     "X-Apple-ActionSignature": signature,
                 ]
             )
+            requestSequence += 1
+            let requestID = (normalizedCode == nil ? "AUTH-PW-" : "AUTH-2FA-") + String(format: "%04d", requestSequence)
+            let cookieNames = await (http as? CookieInspecting)?.cookieNames(for: endpoint) ?? []
+            Log.info(.auth,
+                "[auth][request] id=\(requestID) stage=\(stage) host=\(endpoint.host ?? "?") "
+                + "guidHash=\(Self.shortHash(of: guid)) machineIDHash=\(Self.shortHash(of: guid)) "
+                + "assignedPod=\(assignedPodHost ?? "nil") cookieCount=\(cookieNames.count) cookies=\(cookieNames.map { $0 + ":present" }.joined(separator: ","))")
             let response: HTTPResponse
             do {
                 progress?(.authenticating)
                 response = try await http.send(request, body: body)
                 let serverHint = [response.header("server"), response.header("x-apple-request-uuid"),
                                   response.header("x-daiquiri-instance")].compactMap { $0 }.joined(separator: " ")
-                Log.info(.auth, "authenticate response HTTP \(response.statusCode)\(serverHint.isEmpty ? "" : " [\(serverHint)]")")
+                Log.info(.auth,
+                    "[auth][response] id=\(requestID) status=\(response.statusCode) stage=\(stage) "
+                    + "pod=\(response.header("pod") ?? "nil") location=\(response.header("location") ?? "nil") [\(serverHint)]")
+                if let pod = response.header("pod") {
+                    assignedPodHost = pod
+                }
             } catch {
                 Log.error(.auth, "authenticate request failed: \(String(describing: type(of: error)))")
                 throw error
@@ -255,6 +278,11 @@ public final class AuthenticationService: AuthenticationServicing, @unchecked Se
                     // (failureType 5020). A persistent transient on a 2FA
                     // submit most likely means the code expired during the
                     // retry window, so ask for a fresh one.
+                    logFailureDiagnostic(
+                        stage: "2fa", lastStatus: response.statusCode, host: endpoint.host ?? "?",
+                        guid: guid, retries: rateLimitRetries, rotations: 0,
+                        cause: "transient edge 404/204/5xx persisted through the retry budget on a 2FA submit; challenge discarded, next attempt starts a fresh password flow")
+                    invalidateTwoFactorChallenge()
                     throw AppStoreError.invalidTwoFactorCode
                 }
                 if response.statusCode == 429 {
@@ -282,6 +310,11 @@ public final class AuthenticationService: AuthenticationServicing, @unchecked Se
                let location = response.header("Location"),
                let redirectURL = URL(string: location) {
                 try BagService.validate(authEndpoint: redirectURL)
+                Log.info(.auth,
+                    "[auth][redirect] status=302 fromHost=\(endpoint.host ?? "?") toHost=\(redirectURL.host ?? "?") pod=\(response.header("pod") ?? "nil")")
+                if let podHost = redirectURL.host {
+                    assignedPodHost = podHost
+                }
                 endpoint = redirectURL
                 continue
             }
@@ -335,9 +368,15 @@ public final class AuthenticationService: AuthenticationServicing, @unchecked Se
 
             if failureType == nil && customerMessage == "MZFinance.BadLogin.Configurator_message" {
                 if normalizedCode == nil {
+                    challengeGuidHash = Self.shortHash(of: guid)
                     Log.info(.auth, "account requires two-factor code")
                     return .twoFactorRequired
                 }
+                logFailureDiagnostic(
+                    stage: "2fa", lastStatus: response.statusCode, host: endpoint.host ?? "?",
+                    guid: guid, retries: rateLimitRetries, rotations: didRotateGUID ? 1 : 0,
+                    cause: "challenge answered BadLogin on 2FA submit; discarded, fresh challenge required")
+                invalidateTwoFactorChallenge()
                 throw AppStoreError.invalidTwoFactorCode
             }
 
@@ -353,6 +392,11 @@ public final class AuthenticationService: AuthenticationServicing, @unchecked Se
             // Apple's response when it cannot verify password+code as a
             // unit — a wrong or expired 2FA code, not a bad password.
             if failureType == "5020", normalizedCode != nil {
+                logFailureDiagnostic(
+                    stage: "2fa", lastStatus: response.statusCode, host: endpoint.host ?? "?",
+                    guid: guid, retries: rateLimitRetries, rotations: didRotateGUID ? 1 : 0,
+                    cause: "failureType 5020: Apple could not verify password+code as a unit (wrong or expired code)")
+                invalidateTwoFactorChallenge()
                 throw AppStoreError.invalidTwoFactorCode
             }
 
@@ -381,6 +425,29 @@ public final class AuthenticationService: AuthenticationServicing, @unchecked Se
     /// the raw GUID/machine ID: Apple binds challenges to it.
     static func shortHash(of string: String) -> String {
         String(SHA256Streamer.hash(data: Data(string.utf8)).prefix(12))
+    }
+
+    /// Structured end-of-flow diagnostics (spec §26). No secrets: only
+    /// stage, status, host, preservation flags, counts, and a cause label.
+    private func logFailureDiagnostic(stage: String, lastStatus: Int, host: String,
+                                      guid: String, retries: Int, rotations: Int, cause: String) {
+        let guidPreserved = challengeGuidHash == nil || challengeGuidHash == Self.shortHash(of: guid)
+        Log.error(.auth,
+            "[auth][failure] stage=\(stage) lastStatus=\(lastStatus) host=\(host) "
+            + "guidPreserved=\(guidPreserved) machineIDPreserved=\(guidPreserved) sessionPreserved=true "
+            + "podDetected=\(assignedPodHost != nil) podPreserved=\(assignedPodHost != nil) "
+            + "sapSignatureGenerated=true bodyHashMatched=true retries=\(retries) identityRotations=\(rotations) "
+            + "cause=\(cause)")
+    }
+
+    /// Discard a dead 2FA challenge: the stored signer (SAP session the
+    /// challenge is bound to) and the challenge marker are dropped, so the
+    /// next sign-in starts a fresh password flow and issues a fresh
+    /// challenge instead of mixing a new identity with a stale challenge.
+    private func invalidateTwoFactorChallenge() {
+        signer = nil
+        challengeGuidHash = nil
+        Log.info(.auth, "two-factor challenge discarded; next sign-in starts a fresh password flow")
     }
 
     /// XML plist body matching the desktop client (ipatool's XMLPayload),

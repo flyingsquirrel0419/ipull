@@ -40,6 +40,22 @@ public protocol HTTPClient: Sendable {
     func send(_ request: HTTPRequest, body: Data?) async throws -> HTTPResponse
 }
 
+/// Cookie-name presence (never values) so a device log can prove the
+/// commerce session cookies survived between sign-in stages.
+public protocol CookieInspecting: Sendable {
+    func cookieNames(for url: URL) async -> [String]
+}
+
+#if canImport(FoundationNetworking) || canImport(Darwin)
+extension URLSessionHTTPClient: CookieInspecting {
+    public func cookieNames(for url: URL) async -> [String] {
+        let storage = session.configuration.httpCookieStorage
+        guard let cookies = storage?.cookies(for: url) else { return [] }
+        return cookies.map { $0.name }.sorted()
+    }
+}
+#endif
+
 /// Streaming variant for large downloads — writes the response body
 /// straight to a file instead of holding it in memory. Progress is
 /// reported as (bytesWritten, totalBytes-or-nil).

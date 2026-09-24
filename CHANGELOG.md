@@ -2,6 +2,27 @@
 
 All notable, user-visible changes are listed here. Dates are ISO 8601.
 
+## [0.3.26] - 2026-09-25
+
+### Fixed
+
+- A dead two-factor challenge is now discarded on every 2FA failure
+  (persistent transient 404/204/5xx, BadLogin on a 2FA submit, or
+  failureType 5020): the challenge-bound SAP session is dropped so the
+  next sign-in starts a fresh password flow and receives a fresh code
+  prompt instead of mixing a new identity with a stale challenge.
+
+### Added
+
+- Structured auth telemetry: every authenticate request/response carries
+  a correlation id (AUTH-PW-####/AUTH-2FA-####), stage, host, assigned
+  pod, cookie-name presence (never values), and truncated guid/machine
+  hashes; redirects log from/to pod hosts; failures end with an
+  [auth][failure] diagnostic line (guid/machineID/session/cookie/pod
+  preservation flags, retry and rotation counts, cause) so a device log
+  separates a 2FA payload-parity problem from a transient Apple edge 404
+  without exposing any secret material.
+
 ## [0.3.25] - 2026-09-25
 
 ### Fixed

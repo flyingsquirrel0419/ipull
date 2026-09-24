@@ -340,6 +340,40 @@ final class AuthenticationServiceTests: XCTestCase {
         XCTAssertEqual(http.requestCount, 3)
     }
 
+    func testExhausted2FARestartsWithFreshChallengeFlow() async throws {
+        let http = ScriptedHTTP()
+        // 2FA submit 404s through the whole retry budget; the next sign-in
+        // must start a fresh password flow (new signer, attempt "4") and
+        // receive a fresh challenge instead of reusing the dead one.
+        http.responses = (0..<4).map { _ in
+            HTTPResponse(statusCode: 404, headers: [:], data: Data())
+        } + [
+            HTTPResponse(statusCode: 200, headers: [:],
+                data: plist(["customerMessage": "MZFinance.BadLogin.Configurator_message"])),
+        ]
+        let factory = RecordingSignerFactory()
+        let service = AuthenticationService(
+            http: http,
+            bagProvider: MockBag(),
+            signerFactory: { id in try await factory.make(id) },
+            secrets: InMemorySecretStore(),
+            sleep: { _ in }
+        )
+
+        do {
+            _ = try await service.signIn(email: "u@e.com", password: "pw", twoFactorCode: "123456")
+            XCTFail("Expected invalidTwoFactorCode")
+        } catch AppStoreError.invalidTwoFactorCode {
+            // expected
+        }
+
+        let next = try await service.signIn(email: "u@e.com", password: "pw", twoFactorCode: nil)
+        XCTAssertEqual(next, .twoFactorRequired)
+        // A fresh signer was built for the restarted flow: the dead
+        // challenge's SAP session was discarded.
+        XCTAssertEqual(factory.hardwareIDs.count, 2)
+    }
+
     func testSessionNeverPrintsToken() {
         let session = AppleAccountSession(
             email: "u@e.com", displayName: "U", directoryServicesID: "1",
