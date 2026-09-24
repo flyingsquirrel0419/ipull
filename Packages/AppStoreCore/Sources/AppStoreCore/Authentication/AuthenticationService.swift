@@ -38,8 +38,8 @@ public protocol AuthenticationServicing: Sendable {
 /// Clean-room Swift implementation of the documented App Store auth flow:
 ///
 ///   bag → POST authenticateAccount (XML plist body, SAP-signed, desktop
-///         attempt values: "4" password-only / "2" with a 2FA code,
-///         createSession "true")
+///         attempt values: "4" + createSession "true" for password-only,
+///         ipatool's shape "1" with no createSession for the 2FA submit)
 ///       → on MZFinance.BadLogin → require 2FA code, retry with code appended
 ///       → on 302 → follow pod redirect
 ///       → on 429 → bounded exponential backoff honoring Retry-After,
@@ -143,7 +143,7 @@ public final class AuthenticationService: AuthenticationServicing, @unchecked Se
             signer = try await signerFactory(Data(guid.utf8))
         }
         progress?(.fetchingConfiguration)
-        Log.info(.auth, "sign-in start (guid resolved)")
+        Log.info(.auth, "sign-in start (guid resolved, (Self.appVersionDescription))")
         let bag: Bag
         do {
             bag = try await bagProvider.bag(guid: guid)
@@ -157,13 +157,14 @@ public final class AuthenticationService: AuthenticationServicing, @unchecked Se
         }
 
         var endpoint = bag.authEndpoint
-        // The desktop client (and Apple's own Configurator) always sends
-        // attempt "4" for password-only sign-in and "2" when a two-factor
-        // code is attached, plus createSession "true". The generic 1/2
-        // counter used before v0.3.20 made Apple answer a 2FA retry with
-        // MZFinance.BadLogin even for a correct code, and each abandoned
-        // challenge re-flags the device GUID.
-        let attempt = normalizedCode == nil ? 4 : 2
+        // ipatool's loginRequest shapes: the desktop Configurator sends
+        // attempt "4" with createSession "true" for password-only sign-in,
+        // and the two-factor verification is a fresh loginRequest with
+        // attempt "1" and no createSession field. Sending attempt "2" plus
+        // createSession on a 2FA submit is answered with an empty 404 by
+        // Apple's edge on-device.
+        let attempt = normalizedCode == nil ? 4 : 1
+        let includeCreateSession = normalizedCode == nil
         var rateLimitRetries = 0
         var didRotateGUID = false
 
@@ -175,7 +176,8 @@ public final class AuthenticationService: AuthenticationServicing, @unchecked Se
                 appleID: trimmedEmail,
                 password: passwordField,
                 guid: guid,
-                attempt: attempt
+                attempt: attempt,
+                includeCreateSession: includeCreateSession
             )
             let signature: String
             do {
@@ -379,24 +381,52 @@ public final class AuthenticationService: AuthenticationServicing, @unchecked Se
     /// XML plist body matching the desktop client (ipatool's XMLPayload),
     /// serialized with Swift's PropertyListSerialization — the same encoder
     /// Apple's own Configurator uses. Content-Type stays form-urlencoded.
-    /// The desktop shape always carries createSession "true"; without it a
-    /// two-factor retry is answered with MZFinance.BadLogin even when the
-    /// code is correct.
-    static func authRequestBody(appleID: String, password: String, guid: String, attempt: Int) throws -> Data {
-        try PropertyListSerialization.data(
-            fromPropertyList: [
-                "appleId": appleID,
-                "attempt": String(attempt),
-                "createSession": "true",
-                "guid": guid,
-                "password": password,
-                "rmp": "0",
-                "why": "signIn",
-            ],
+    ///
+    /// Two shapes, matching ipatool's loginRequest exactly:
+    ///   - password-only sign-in: attempt "4" with createSession "true"
+    ///     (the desktop Configurator values that Apple answers reliably);
+    ///   - two-factor verification: attempt "1" and no createSession field
+    ///     at all. ipatool's 2FA submit is exactly this six-field body, and
+    ///     Apple answers attempt=2 + createSession=true 2FA retries with an
+    ///     empty 404 on-device.
+    static func authRequestBody(appleID: String, password: String, guid: String, attempt: Int, includeCreateSession: Bool) throws -> Data {
+        var body: [String: String] = [
+            "appleId": appleID,
+            "attempt": String(attempt),
+            "guid": guid,
+            "password": password,
+            "rmp": "0",
+            "why": "signIn",
+        ]
+        if includeCreateSession {
+            body["createSession"] = "true"
+        }
+        return try PropertyListSerialization.data(
+            fromPropertyList: body,
             format: .xml,
             options: 0
         )
     }
+
+    /// Running app version for the sign-in log line. Lets a pasted device
+    /// log prove which build produced it, since LiveContainer can keep
+    /// loading a cached older bundle after a reinstall.
+    static let appVersionDescription: String = {
+        #if canImport(Darwin)
+        let bundle = Bundle.main
+        let short = bundle.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
+        let build = bundle.object(forInfoDictionaryKey: "CFBundleVersion") as? String
+        if let short, let build, !build.isEmpty, build != "$(CURRENT_PROJECT_VERSION)" {
+            return "v" + short + " (" + build + ")"
+        }
+        if let short {
+            return "v" + short
+        }
+        return "version unknown"
+        #else
+        return "test host"
+        #endif
+    }()
 
     // MARK: - Session persistence (Keychain only)
 

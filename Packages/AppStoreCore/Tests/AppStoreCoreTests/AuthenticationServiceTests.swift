@@ -147,7 +147,7 @@ final class AuthenticationServiceTests: XCTestCase {
         }
     }
 
-    func testTwoFactorCodeSendsDesktopAttemptAndCreateSession() async throws {
+    func testTwoFactorCodeMatchesIPatoolSubmitShape() async throws {
         final class BodyCapture: SAPSigning, @unchecked Sendable {
             private(set) var lastBody: Data?
             func sign(body: Data) async throws -> String {
@@ -170,10 +170,12 @@ final class AuthenticationServiceTests: XCTestCase {
         let body = try XCTUnwrap(signer.lastBody)
         let bodyPlist = try XCTUnwrap(
             PropertyListSerialization.propertyList(from: body, format: nil) as? [String: Any])
-        // Desktop values with a code attached: attempt "2", password+code.
-        XCTAssertEqual(bodyPlist["attempt"] as? String, "2")
+        // ipatool's 2FA submit shape: attempt "1", password+code, and no
+        // createSession field. attempt "2" with createSession is answered
+        // with an empty 404 by Apple's edge on-device.
+        XCTAssertEqual(bodyPlist["attempt"] as? String, "1")
         XCTAssertEqual(bodyPlist["password"] as? String, "pw123456")
-        XCTAssertEqual(bodyPlist["createSession"] as? String, "true")
+        XCTAssertNil(bodyPlist["createSession"])
     }
 
     func testTwoFactorSubmissionReusesEstablishedSigner() async throws {

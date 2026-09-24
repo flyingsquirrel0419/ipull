@@ -2,6 +2,20 @@
 
 All notable, user-visible changes are listed here. Dates are ISO 8601.
 
+## [0.3.23] - 2026-09-25
+
+### Fixed
+
+- Submit the two-factor code with the same request shape ipatool uses:
+  attempt "1" and no createSession field. Apple answered the previous
+  attempt "2" + createSession "true" 2FA submit with an empty 404
+  on-device, which either burned the retry budget or (in older builds)
+  rotated the GUID mid-challenge and broke verification.
+- The sign-in start log now includes the running app version
+  (for example "v0.3.23"), so a pasted device log proves which build
+  produced it even if LiveContainer keeps loading a cached older bundle
+  after a reinstall.
+
 ## [0.3.22] - 2026-09-24
 
 ### Fixed
