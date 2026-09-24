@@ -225,6 +225,66 @@ final class AuthenticationServiceTests: XCTestCase {
         }
     }
 
+    func testTwoFactorEmpty404RetriesWithoutRotation() async throws {
+        let http = ScriptedHTTP()
+        // 2FA verify hits the transient 404 window, then succeeds on the
+        // same GUID without rotation.
+        http.responses = [
+            HTTPResponse(statusCode: 404, headers: [:], data: Data()),
+            HTTPResponse(statusCode: 404, headers: [:], data: Data()),
+            HTTPResponse(statusCode: 200,
+                headers: ["X-Set-Apple-Store-Front": "143441-1,29"],
+                data: plist(["dsPersonId": "1", "passwordToken": "tok"])),
+        ]
+        let factory = RecordingSignerFactory()
+        let secrets = InMemorySecretStore()
+        try secrets.save(Data("AABBCCDDEEFF".utf8), for: DeviceIdentity.keychainKey)
+        let service = AuthenticationService(
+            http: http,
+            bagProvider: MockBag(),
+            signerFactory: { id in try await factory.make(id) },
+            secrets: secrets,
+            sleep: { _ in }
+        )
+
+        let result = try await service.signIn(email: "u@e.com", password: "pw", twoFactorCode: "123456")
+        guard case .success = result else { return XCTFail("Expected success after 404 retries") }
+
+        // No rotation: factory called once (initial), same GUID throughout.
+        XCTAssertEqual(factory.hardwareIDs.count, 1)
+        XCTAssertEqual(factory.hardwareIDs[0], Data("AABBCCDDEEFF".utf8))
+        let stored = try XCTUnwrap(secrets.load(key: DeviceIdentity.keychainKey))
+        XCTAssertEqual(String(data: stored, encoding: .utf8), "AABBCCDDEEFF")
+    }
+
+    func testTwoFactorEmpty404ExhaustedMapsToInvalidTwoFactorCode() async {
+        let http = ScriptedHTTP()
+        http.responses = (0..<4).map { _ in
+            HTTPResponse(statusCode: 404, headers: [:], data: Data())
+        }
+        let factory = RecordingSignerFactory()
+        let service = AuthenticationService(
+            http: http,
+            bagProvider: MockBag(),
+            signerFactory: { id in try await factory.make(id) },
+            secrets: InMemorySecretStore(),
+            sleep: { _ in }
+        )
+
+        do {
+            _ = try await service.signIn(email: "u@e.com", password: "pw", twoFactorCode: "123456")
+            XCTFail("Expected invalidTwoFactorCode")
+        } catch AppStoreError.invalidTwoFactorCode {
+            // expected: challenge likely expired after 3 retries
+        } catch {
+            XCTFail("Wrong error: \(error)")
+        }
+
+        // No rotation attempted.
+        XCTAssertEqual(factory.hardwareIDs.count, 1)
+        XCTAssertEqual(http.requestCount, 4)
+    }
+
     func testSessionNeverPrintsToken() {
         let session = AppleAccountSession(
             email: "u@e.com", displayName: "U", directoryServicesID: "1",

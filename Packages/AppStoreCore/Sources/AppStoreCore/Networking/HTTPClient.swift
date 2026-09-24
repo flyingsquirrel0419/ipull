@@ -49,7 +49,18 @@ public protocol StreamingHTTPClient: HTTPClient {
 }
 
 public final class URLSessionHTTPClient: HTTPClient, @unchecked Sendable {
-    public init() {}
+    /// Dedicated session so authenticate's Set-Cookie (mzf_in, itspod)
+    /// survives across sign-in attempts. URLSession.shared is not used
+    /// because its cookie storage is global and could mix cookies from
+    /// unrelated Apple endpoints.
+    private let session: URLSession
+
+    public init() {
+        let configuration = URLSessionConfiguration.default
+        configuration.httpCookieAcceptPolicy = .always
+        configuration.httpShouldSetCookies = true
+        session = URLSession(configuration: configuration)
+    }
 
     public func send(_ request: HTTPRequest, body: Data?) async throws -> HTTPResponse {
         #if canImport(FoundationNetworking) || canImport(Darwin)
@@ -64,7 +75,7 @@ public final class URLSessionHTTPClient: HTTPClient, @unchecked Sendable {
         urlRequest.httpBody = body
 
         do {
-            let (data, response) = try await URLSession.shared.data(for: urlRequest)
+            let (data, response) = try await session.data(for: urlRequest)
             guard let http = response as? HTTPURLResponse else {
                 throw AppStoreError.unknown("Non-HTTP response")
             }

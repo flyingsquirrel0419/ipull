@@ -2,6 +2,19 @@
 
 All notable, user-visible changes are listed here. Dates are ISO 8601.
 
+## [0.3.22] - 2026-09-24
+
+### Fixed
+
+- Keep the 2FA verification on the same GUID, SAP session, and cookie jar
+  that received the challenge. Rotating the GUID on a 2FA 404 broke the
+  challenge binding and made Apple answer failureType 5020 even for a
+  correct code; now 2FA 404s retry without rotation and only ask for a
+  fresh code after three attempts.
+- Use a dedicated URLSession with an explicit cookie storage so the
+  mzf_in/itspod cookies set by authenticate survive across sign-in
+  attempts (the desktop client's cookie jar equivalent).
+
 ## [0.3.21] - 2026-09-24
 
 ### Fixed

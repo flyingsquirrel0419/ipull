@@ -232,6 +232,23 @@ public final class AuthenticationService: AuthenticationServicing, @unchecked Se
             // (transient; observed on-device right after the 2FA prompt).
             // Retry it like a rate limit, with backoff.
             if response.statusCode == 404 && response.data.isEmpty {
+                // 2FA verification path: the challenge is bound to this
+                // GUID and SAP session, so rotation would break it. Retry
+                // without rotating; after 3 attempts the challenge has
+                // likely expired, so ask for a fresh code.
+                if normalizedCode != nil {
+                    if rateLimitRetries < Self.maxRateLimitRetries {
+                        let delay = Self.retryBackoffSeconds[min(rateLimitRetries, Self.retryBackoffSeconds.count - 1)]
+                        rateLimitRetries += 1
+                        Log.info(.auth, "authenticate empty 404 on 2FA verify; retry \(rateLimitRetries) without rotation after \(delay)s")
+                        progress?(.retryingAfterRateLimit(seconds: delay))
+                        await sleep(delay * 1_000_000_000)
+                        continue
+                    }
+                    Log.error(.auth, "authenticate still 404 on 2FA verify after \(rateLimitRetries) retries")
+                    throw AppStoreError.invalidTwoFactorCode
+                }
+                // Password-only path: rotation is safe (no challenge to lose).
                 if rateLimitRetries < Self.maxRateLimitRetries {
                     let delay = Self.retryBackoffSeconds[min(rateLimitRetries, Self.retryBackoffSeconds.count - 1)]
                     rateLimitRetries += 1
