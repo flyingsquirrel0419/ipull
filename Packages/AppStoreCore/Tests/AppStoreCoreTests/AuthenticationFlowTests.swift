@@ -78,12 +78,25 @@ final class AuthenticationFlowTests: XCTestCase {
 
         // SAP signing must have happened before authenticate.
         XCTAssertTrue(signer.signCalls > 0, "signing must run before authenticate")
+
+        // The authenticate body must be an XML plist (per ipatool's
+        // loginRequest), not form-urlencoded, and must carry the fields.
+        let body = try XCTUnwrap(signer.lastBody)
+        let plist = try XCTUnwrap(
+            PropertyListSerialization.propertyList(from: body, format: nil) as? [String: Any],
+            "auth body must be an XML plist")
+        XCTAssertEqual(plist["appleId"] as? String, "user@example.com")
+        XCTAssertEqual(plist["password"] as? String, "pw")
+        XCTAssertEqual(plist["guid"] as? String, "AABBCCDDEEFF")
+        XCTAssertEqual(plist["why"] as? String, "signIn")
     }
 
     final class StubSigner: SAPSigning, @unchecked Sendable {
         private(set) var signCalls = 0
+        private(set) var lastBody: Data?
         func sign(body: Data) async throws -> String {
             signCalls += 1
+            lastBody = body
             // Header value is base64 (matches the real signer's encoding).
             return Data("stub".utf8).base64EncodedString()
         }

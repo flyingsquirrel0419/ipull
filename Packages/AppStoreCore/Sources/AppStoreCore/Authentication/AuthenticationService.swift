@@ -282,19 +282,23 @@ public final class AuthenticationService: AuthenticationServicing, @unchecked Se
         return digits.count == 6 ? digits : nil
     }
 
-    /// Form-urlencoded body matching the documented desktop-client flow
-    /// (ipatool): appleId, password (+2FA appended), guid, attempt, rmp, why.
+    /// Body matching the desktop-client flow (ipatool's loginRequest): an
+    /// XML plist with appleId, password (+2FA appended), guid, attempt, rmp,
+    /// why. The Content-Type stays form-urlencoded — that is what Apple's
+    /// servers expect despite the plist body.
     static func authRequestBody(appleID: String, password: String, guid: String, attempt: Int) throws -> Data {
-        var components = URLComponents()
-        components.queryItems = [
-            URLQueryItem(name: "appleId", value: appleID),
-            URLQueryItem(name: "attempt", value: String(attempt)),
-            URLQueryItem(name: "guid", value: guid),
-            URLQueryItem(name: "password", value: password),
-            URLQueryItem(name: "rmp", value: "0"),
-            URLQueryItem(name: "why", value: "signIn"),
-        ]
-        return Data((components.percentEncodedQuery ?? "").utf8)
+        try PropertyListSerialization.data(
+            fromPropertyList: [
+                "appleId": appleID,
+                "attempt": String(attempt),
+                "guid": guid,
+                "password": password,
+                "rmp": "0",
+                "why": "signIn",
+            ],
+            format: .xml,
+            options: 0
+        )
     }
 
     // MARK: - Session persistence (Keychain only)

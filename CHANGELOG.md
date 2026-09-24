@@ -2,6 +2,14 @@
 
 All notable, user-visible changes are listed here. Dates are ISO 8601.
 
+## [0.3.14] - 2026-09-24
+
+### Fixed
+
+- Send the authenticate body as an XML plist (the desktop-client format,
+  per ipatool) instead of form-urlencoded. Apple answered the misencoded
+  body with a persistent empty HTTP 404 at buy.itunes.apple.com.
+
 ## [0.3.13] - 2026-09-24
 
 ### Changed
