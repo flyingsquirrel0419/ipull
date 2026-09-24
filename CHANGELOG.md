@@ -2,6 +2,21 @@
 
 All notable, user-visible changes are listed here. Dates are ISO 8601.
 
+## [0.3.28] - 2026-09-25
+
+### Fixed
+
+- Critical: the Pod/itspod response header (a numeric routing identifier
+  like "20") was being used as a request hostname, so the 2FA submit went
+  to host=20 and timed out (URLError -1001) with zero cookies. Pod
+  metadata and the redirect URL are now separate state: the authenticate
+  endpoint is the bag's auth endpoint, and only an actual HTTP 302
+  Location from Apple may replace it. Apple-provided Location URLs are
+  used verbatim and never reconstructed from the pod number.
+- Set-Cookie diagnostic no longer comma-splits raw header values (the
+  Expires date contains a comma); cookie names now come from Foundation's
+  HTTPCookie parser.
+
 ## [0.3.27] - 2026-09-25
 
 ### Added

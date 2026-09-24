@@ -76,10 +76,14 @@ public final class AuthenticationService: AuthenticationServicing, @unchecked Se
     /// Monotonic request counter for [auth][request]/[auth][response]
     /// correlation across password and 2FA stages.
     private var requestSequence = 0
-    /// Apple pod assigned by an authenticate response (pod header) or a
-    /// pod redirect. Preserved across the password → 2FA transition so the
-    /// verification hits the same store pod that issued the challenge.
-    private var assignedPodHost: String?
+    /// Pod ROUTING METADATA from response headers (Pod / itspod: a numeric
+    /// identifier like "20"). Never a hostname — it must never be used to
+    /// build or mutate a request URL.
+    private var assignedPodID: String?
+    /// The exact Location URL of an actual HTTP 302 from Apple (e.g.
+    /// https://p35-buy.itunes.apple.com/...?Pod=35&PRH=35). This is the
+    /// ONLY source allowed to change the authenticate endpoint.
+    private var authenticationRedirectURL: URL?
     /// Truncated hash of the GUID that received the 2FA challenge, for
     /// same-guid proof in logs.
     private var challengeGuidHash: String?
@@ -170,18 +174,10 @@ public final class AuthenticationService: AuthenticationServicing, @unchecked Se
             throw error
         }
 
-        var endpoint = bag.authEndpoint
-        var defaultEndpoint = bag.authEndpoint
-        if normalizedCode != nil, let podHost = assignedPodHost,
-           podHost != defaultEndpoint.host {
-            var podComponents = URLComponents(url: defaultEndpoint, resolvingAgainstBaseURL: false)!
-            podComponents.host = podHost
-            if let podURL = podComponents.url {
-                try? BagService.validate(authEndpoint: podURL)
-                endpoint = podURL
-                Log.info(.auth, "2FA submit targets the pod that issued the challenge: \(podHost)")
-            }
-        }
+        // Endpoint selection rule: the bag's auth endpoint is the default.
+        // Only an actual HTTP 302 Location from Apple may replace it —
+        // a Pod/itspod response header is routing metadata, never a host.
+        var endpoint = authenticationRedirectURL ?? bag.authEndpoint
         let stage = normalizedCode == nil ? "password" : "2fa"
         Log.info(.auth, "AUTH FLOW ID=\(Self.shortHash(of: guid)) stage=\(stage) identityGeneration=\(identityGeneration)")
         // ipatool's loginRequest shapes: the desktop Configurator sends
@@ -256,7 +252,7 @@ public final class AuthenticationService: AuthenticationServicing, @unchecked Se
                 + "path=\(endpoint.path) queryKeys=[\(queryKeys)] "
                 + "authLogicalAttempt=\(logicalAttempt) transportAttempt=\(transportAttempt) identityGeneration=\(identityGeneration) "
                 + "guidHash=\(Self.shortHash(of: guid)) machineIDHash=\(Self.shortHash(of: guid)) "
-                + "assignedPod=\(assignedPodHost ?? "nil") cookieCount=\(cookieNames.count) cookies=\(cookieNames.map { $0 + ":present" }.joined(separator: ","))")
+                + "assignedPodID=\(assignedPodID ?? "nil") redirectURL=\(authenticationRedirectURL?.host ?? "nil") cookieCount=\(cookieNames.count) cookies=\(cookieNames.map { $0 + ":present" }.joined(separator: ","))")
             let response: HTTPResponse
             do {
                 progress?(.authenticating)
@@ -265,8 +261,8 @@ public final class AuthenticationService: AuthenticationServicing, @unchecked Se
                 Log.info(.auth,
                     "[auth][response] id=\(requestID) status=\(response.statusCode) stage=\(stage) layer=\(layer.rawValue) "
                     + AppleAuthResponseLayer.describe(response))
-                if let pod = response.header("pod") {
-                    assignedPodHost = pod
+                if let pod = response.header("pod") ?? response.header("itspod") {
+                    assignedPodID = pod
                 }
             } catch {
                 Log.error(.auth, "authenticate request failed: \(String(describing: type(of: error)))")
@@ -341,9 +337,9 @@ public final class AuthenticationService: AuthenticationServicing, @unchecked Se
                 try BagService.validate(authEndpoint: redirectURL)
                 Log.info(.auth,
                     "[auth][redirect] status=302 fromHost=\(endpoint.host ?? "?") toHost=\(redirectURL.host ?? "?") pod=\(response.header("pod") ?? "nil")")
-                if let podHost = redirectURL.host {
-                    assignedPodHost = podHost
-                }
+                // Store the exact Location Apple sent; never reconstruct a
+                // pod URL from the numeric pod identifier.
+                authenticationRedirectURL = redirectURL
                 endpoint = redirectURL
                 continue
             }
@@ -482,11 +478,20 @@ public final class AuthenticationService: AuthenticationServicing, @unchecked Se
         /// Safe header metadata for logs: names and presence only, never
         /// cookie values or signed payloads.
         static func describe(_ response: HTTPResponse) -> String {
-            let setCookies = response.headers
-                .filter { $0.key.caseInsensitiveCompare("set-cookie") == .orderedSame }
-                .flatMap { $0.value.components(separatedBy: ",") }
-                .compactMap { $0.trimmingCharacters(in: .whitespaces).components(separatedBy: "=").first }
-                .filter { !$0.isEmpty }
+            // Never comma-split a raw Set-Cookie value: the Expires date
+            // itself contains a comma ("Sat, 24-Oct-2026 ..."). Feed the
+            // header fields to Foundation's parser and read cookie NAMES
+            // from the resulting objects. Linux's FoundationNetworking
+            // shadows HTTPCookie, so this is Darwin-only.
+            #if canImport(Darwin)
+            let headerFields = response.headers.reduce(into: [String: String]()) { $0[$1.key] = $1.value }
+            let parsed = HTTPCookie.cookies(
+                withResponseHeaderFields: headerFields,
+                for: URL(string: "https://buy.itunes.apple.com")!)
+            let setCookies = parsed.map { $0.name }
+            #else
+            let setCookies: [String] = []
+            #endif
             let fields: [(String, String?)] = [
                 ("contentType", response.header("content-type")),
                 ("locationHost", response.header("location").flatMap { URL(string: $0)?.host }),
@@ -515,7 +520,7 @@ public final class AuthenticationService: AuthenticationServicing, @unchecked Se
         Log.error(.auth,
             "[auth][failure] stage=\(stage) lastStatus=\(lastStatus) host=\(host) "
             + "guidPreserved=\(guidPreserved) machineIDPreserved=\(guidPreserved) sessionPreserved=true "
-            + "podDetected=\(assignedPodHost != nil) podPreserved=\(assignedPodHost != nil) "
+            + "podDetected=\(assignedPodID != nil || authenticationRedirectURL != nil) podPreserved=\(assignedPodID != nil || authenticationRedirectURL != nil) "
             + "sapSignatureGenerated=true bodyHashMatched=true retries=\(retries) identityRotations=\(rotations) "
             + "cause=\(cause)")
     }

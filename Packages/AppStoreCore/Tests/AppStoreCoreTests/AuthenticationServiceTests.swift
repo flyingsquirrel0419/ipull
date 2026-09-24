@@ -374,6 +374,42 @@ final class AuthenticationServiceTests: XCTestCase {
         XCTAssertEqual(factory.hardwareIDs.count, 2)
     }
 
+    func testPodHeaderNeverBecomesRequestHost() async throws {
+        // Regression for v0.3.27: the Pod/itspod response header ("20") is
+        // routing metadata, not a hostname. The 2FA submit must keep using
+        // the bag auth endpoint; only an actual 302 Location may change it.
+        let http = MockHTTP()
+        http.responses = [
+            // Password: backend assigns pod 20 and requires 2FA.
+            HTTPResponse(statusCode: 200,
+                headers: ["pod": "20", "itspod": "20"],
+                data: plist(["customerMessage": "MZFinance.BadLogin.Configurator_message"])),
+            // 2FA submit: succeeds.
+            HTTPResponse(statusCode: 200,
+                headers: ["X-Set-Apple-Store-Front": "143441-1,29"],
+                data: plist(["dsPersonId": "1", "passwordToken": "tok"])),
+        ]
+        let service = AuthenticationService(
+            http: http,
+            bagProvider: MockBag(),
+            signerFactory: { _ in MockSigner() },
+            secrets: InMemorySecretStore(),
+            sleep: { _ in }
+        )
+
+        let first = try await service.signIn(email: "u@e.com", password: "pw", twoFactorCode: nil)
+        XCTAssertEqual(first, .twoFactorRequired)
+        let second = try await service.signIn(email: "u@e.com", password: "pw", twoFactorCode: "123456")
+        guard case .success = second else { return XCTFail("Expected success") }
+
+        // Both requests went to real hosts; "20" was never used as a host.
+        XCTAssertEqual(http.requests.count, 2)
+        for request in http.requests {
+            let host = try XCTUnwrap(request.url.host)
+            XCTAssertTrue(host.hasSuffix("itunes.apple.com"), "pod ID leaked into host: \(host)")
+        }
+    }
+
     func testSessionNeverPrintsToken() {
         let session = AppleAccountSession(
             email: "u@e.com", displayName: "U", directoryServicesID: "1",
