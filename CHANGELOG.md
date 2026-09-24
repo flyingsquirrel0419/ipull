@@ -2,6 +2,18 @@
 
 All notable, user-visible changes are listed here. Dates are ISO 8601.
 
+## [0.3.21] - 2026-09-24
+
+### Fixed
+
+- Reuse the established SAP session when submitting the two-factor code.
+  Creating a new signer started a fresh guest session, so Apple could not
+  verify password+code against the original challenge and answered
+  failureType 5020 (Did you forget your password?) even for a correct
+  code.
+- Map failureType 5020 with a code attached to invalidTwoFactorCode so
+  the UI asks for a fresh code instead of reporting a password error.
+
 ## [0.3.20] - 2026-09-24
 
 ### Fixed

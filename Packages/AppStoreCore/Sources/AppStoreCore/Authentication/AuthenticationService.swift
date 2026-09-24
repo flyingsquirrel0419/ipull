@@ -133,8 +133,15 @@ public final class AuthenticationService: AuthenticationServicing, @unchecked Se
         }
 
         var guid = try identityProvider(secrets)
-        progress?(.initializingSigner)
-        signer = try await signerFactory(Data(guid.utf8))
+        // Reuse the established SAP session when one exists. The 2FA
+        // challenge Apple issued is bound to that session; creating a new
+        // signer (and thus a new guest session) makes the server unable to
+        // verify password+code, which it reports as failureType 5020
+        // ("Did you forget your password?").
+        if signer == nil {
+            progress?(.initializingSigner)
+            signer = try await signerFactory(Data(guid.utf8))
+        }
         progress?(.fetchingConfiguration)
         Log.info(.auth, "sign-in start (guid resolved)")
         let bag: Bag
@@ -324,6 +331,13 @@ public final class AuthenticationService: AuthenticationServicing, @unchecked Se
 
             if failureType == "-5000" {
                 throw AppStoreError.authenticationFailed
+            }
+
+            // failureType 5020 with "Did you forget your password?" is
+            // Apple's response when it cannot verify password+code as a
+            // unit — a wrong or expired 2FA code, not a bad password.
+            if failureType == "5020", normalizedCode != nil {
+                throw AppStoreError.invalidTwoFactorCode
             }
 
             if failureType == "2034" || failureType == "2042" {

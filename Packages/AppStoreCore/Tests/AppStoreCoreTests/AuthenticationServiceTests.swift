@@ -176,6 +176,55 @@ final class AuthenticationServiceTests: XCTestCase {
         XCTAssertEqual(bodyPlist["createSession"] as? String, "true")
     }
 
+    func testTwoFactorSubmissionReusesEstablishedSigner() async throws {
+        let http = ScriptedHTTP()
+        http.responses = [
+            // First signIn: 2FA required.
+            HTTPResponse(statusCode: 200, headers: [:],
+                data: plist(["customerMessage": "MZFinance.BadLogin.Configurator_message"])),
+            // Second signIn with code: success.
+            HTTPResponse(statusCode: 200,
+                headers: ["X-Set-Apple-Store-Front": "143441-1,29"],
+                data: plist(["dsPersonId": "1", "passwordToken": "tok"])),
+        ]
+        let factory = RecordingSignerFactory()
+        let service = AuthenticationService(
+            http: http,
+            bagProvider: MockBag(),
+            signerFactory: { id in try await factory.make(id) },
+            secrets: InMemorySecretStore(),
+            sleep: { _ in }
+        )
+
+        let first = try await service.signIn(email: "u@e.com", password: "pw", twoFactorCode: nil)
+        XCTAssertEqual(first, .twoFactorRequired)
+
+        let second = try await service.signIn(email: "u@e.com", password: "pw", twoFactorCode: "123456")
+        guard case .success = second else { return XCTFail("Expected success") }
+
+        // The code submission must reuse the signer established for the
+        // challenge; creating a new one would start a fresh SAP session
+        // and make Apple unable to verify password+code (failureType 5020).
+        XCTAssertEqual(factory.hardwareIDs.count, 1)
+    }
+
+    func testFailureType5020WithCodeMapsToInvalidTwoFactorCode() async {
+        let http = ScriptedHTTP()
+        http.responses = [
+            HTTPResponse(statusCode: 200, headers: [:],
+                data: plist(["failureType": "5020", "customerMessage": "Did you forget your password?"])),
+        ]
+        let service = makeService(http: http, sleeps: Sleeps())
+        do {
+            _ = try await service.signIn(email: "u@e.com", password: "pw", twoFactorCode: "123456")
+            XCTFail("Expected invalidTwoFactorCode")
+        } catch AppStoreError.invalidTwoFactorCode {
+            // expected
+        } catch {
+            XCTFail("Wrong error: \(error)")
+        }
+    }
+
     func testSessionNeverPrintsToken() {
         let session = AppleAccountSession(
             email: "u@e.com", displayName: "U", directoryServicesID: "1",
