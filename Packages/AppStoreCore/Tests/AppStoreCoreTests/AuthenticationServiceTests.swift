@@ -134,17 +134,46 @@ final class AuthenticationServiceTests: XCTestCase {
         let http = MockHTTP()
         http.responses = [
             HTTPResponse(statusCode: 200, headers: [:], data: plist(["failureType": "-5000"])),
-            HTTPResponse(statusCode: 200, headers: [:], data: plist(["failureType": "-5000"])),
         ]
         let service = makeService(http: http)
         do {
             _ = try await service.signIn(email: "u@e.com", password: "wrong", twoFactorCode: nil)
             XCTFail()
         } catch AppStoreError.authenticationFailed {
-            // expected: retried once, then failed
+            // expected: desktop attempt values leave no room for a
+            // client-side retry on -5000
         } catch {
             XCTFail("Wrong error: \(error)")
         }
+    }
+
+    func testTwoFactorCodeSendsDesktopAttemptAndCreateSession() async throws {
+        final class BodyCapture: SAPSigning, @unchecked Sendable {
+            private(set) var lastBody: Data?
+            func sign(body: Data) async throws -> String {
+                lastBody = body
+                return "SAP-200:test"
+            }
+        }
+        let http = MockHTTP()
+        http.responses = [HTTPResponse(
+            statusCode: 200,
+            headers: ["X-Set-Apple-Store-Front": "143441-1,29"],
+            data: plist(["dsPersonId": "1", "passwordToken": "tok"])
+        )]
+        let signer = BodyCapture()
+        let service = AuthenticationService(
+            http: http, bagProvider: MockBag(), signer: signer,
+            secrets: InMemorySecretStore(), guidProvider: { "AABBCCDDEEFF" }
+        )
+        _ = try await service.signIn(email: "u@e.com", password: "pw", twoFactorCode: "123456")
+        let body = try XCTUnwrap(signer.lastBody)
+        let bodyPlist = try XCTUnwrap(
+            PropertyListSerialization.propertyList(from: body, format: nil) as? [String: Any])
+        // Desktop values with a code attached: attempt "2", password+code.
+        XCTAssertEqual(bodyPlist["attempt"] as? String, "2")
+        XCTAssertEqual(bodyPlist["password"] as? String, "pw123456")
+        XCTAssertEqual(bodyPlist["createSession"] as? String, "true")
     }
 
     func testSessionNeverPrintsToken() {

@@ -37,9 +37,11 @@ public protocol AuthenticationServicing: Sendable {
 
 /// Clean-room Swift implementation of the documented App Store auth flow:
 ///
-///   bag → POST authenticateAccount (plist form body, SAP-signed)
+///   bag → POST authenticateAccount (XML plist body, SAP-signed, desktop
+///         attempt values: "4" password-only / "2" with a 2FA code,
+///         createSession "true")
 ///       → on MZFinance.BadLogin → require 2FA code, retry with code appended
-///       → on 302 → follow pod redirect with attempt reset to 1
+///       → on 302 → follow pod redirect
 ///       → on 429 → bounded exponential backoff honoring Retry-After,
 ///         then rethrow .rateLimited
 ///       → persistent empty 404 → rotate the device GUID once (Apple flags
@@ -148,27 +150,31 @@ public final class AuthenticationService: AuthenticationServicing, @unchecked Se
         }
 
         var endpoint = bag.authEndpoint
-        var attempt = 1
-        var redirectHop = false
+        // The desktop client (and Apple's own Configurator) always sends
+        // attempt "4" for password-only sign-in and "2" when a two-factor
+        // code is attached, plus createSession "true". The generic 1/2
+        // counter used before v0.3.20 made Apple answer a 2FA retry with
+        // MZFinance.BadLogin even for a correct code, and each abandoned
+        // challenge re-flags the device GUID.
+        let attempt = normalizedCode == nil ? 4 : 2
         var rateLimitRetries = 0
         var didRotateGUID = false
 
         // Allow the normal retry and redirect in addition to rate-limit
         // retries and the one-time GUID rotation retry.
         for _ in 0..<(4 + Self.maxRateLimitRetries + 1) {
-            let requestAttempt = redirectHop ? 1 : attempt
             let passwordField = password + (normalizedCode ?? "")
             let body = try Self.authRequestBody(
                 appleID: trimmedEmail,
                 password: passwordField,
                 guid: guid,
-                attempt: requestAttempt
+                attempt: attempt
             )
             let signature: String
             do {
                 progress?(.signingRequest)
                 signature = try await signer.sign(body: body)
-                Log.info(.auth, "SAP signature produced (attempt \(requestAttempt))")
+                Log.info(.auth, "SAP signature produced (attempt \(attempt))")
             } catch {
                 // Log only the error type: emulator errors may embed the
                 // signed body, which contains the password in percent-encoded
@@ -243,7 +249,6 @@ public final class AuthenticationService: AuthenticationServicing, @unchecked Se
                     guid = freshGUID
                     signer = try await signerFactory(Data(freshGUID.utf8))
                     rateLimitRetries = 0
-                    attempt = 1
                     continue
                 }
                 Log.error(.auth, "authenticate still 404 after \(rateLimitRetries) retries")
@@ -255,7 +260,6 @@ public final class AuthenticationService: AuthenticationServicing, @unchecked Se
                let redirectURL = URL(string: location) {
                 try BagService.validate(authEndpoint: redirectURL)
                 endpoint = redirectURL
-                redirectHop = true
                 continue
             }
 
@@ -306,11 +310,6 @@ public final class AuthenticationService: AuthenticationServicing, @unchecked Se
                 return .success(session)
             }
 
-            if attempt == 1 && failureType == "-5000" && normalizedCode == nil {
-                attempt += 1
-                continue
-            }
-
             if failureType == nil && customerMessage == "MZFinance.BadLogin.Configurator_message" {
                 if normalizedCode == nil {
                     Log.info(.auth, "account requires two-factor code")
@@ -349,11 +348,15 @@ public final class AuthenticationService: AuthenticationServicing, @unchecked Se
     /// XML plist body matching the desktop client (ipatool's XMLPayload),
     /// serialized with Swift's PropertyListSerialization — the same encoder
     /// Apple's own Configurator uses. Content-Type stays form-urlencoded.
+    /// The desktop shape always carries createSession "true"; without it a
+    /// two-factor retry is answered with MZFinance.BadLogin even when the
+    /// code is correct.
     static func authRequestBody(appleID: String, password: String, guid: String, attempt: Int) throws -> Data {
         try PropertyListSerialization.data(
             fromPropertyList: [
                 "appleId": appleID,
                 "attempt": String(attempt),
+                "createSession": "true",
                 "guid": guid,
                 "password": password,
                 "rmp": "0",

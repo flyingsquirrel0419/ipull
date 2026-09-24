@@ -2,6 +2,17 @@
 
 All notable, user-visible changes are listed here. Dates are ISO 8601.
 
+## [0.3.20] - 2026-09-24
+
+### Fixed
+
+- Send the desktop client's authenticate attempt values again: attempt
+  "4" for password-only sign-in, "2" with a two-factor code, and
+  createSession "true". With the generic 1/2 counter Apple answered a
+  correct two-factor code with MZFinance.BadLogin, and every abandoned
+  challenge re-flagged the device GUID, which is why each sign-in needed
+  a fresh rotation in v0.3.19.
+
 ## [0.3.19] - 2026-09-24
 
 ### Fixed
