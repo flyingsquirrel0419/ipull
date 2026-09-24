@@ -16,10 +16,16 @@ public final class AppEnvironment: ObservableObject {
     /// True after Apple answered "verification code required". While set the
     /// caller must resubmit the same credentials with a code appended.
     @Published public private(set) var needsTwoFactorCode = false
+    @Published public private(set) var sapAssetProgress: SAPAssetProgress?
+    @Published public private(set) var sapDownloadStartedAt: Date?
 
     public init() {
         let secrets = KeychainStore()
-        let client = AppStoreClient.live(secrets: secrets)
+        let (progressStream, progressContinuation) = AsyncStream.makeStream(
+            of: SAPAssetProgress.self, bufferingPolicy: .bufferingNewest(1))
+        let client = AppStoreClient.live(secrets: secrets) { progress in
+            progressContinuation.yield(progress)
+        }
         self.client = client
 
         let container: ModelContainer
@@ -69,6 +75,15 @@ public final class AppEnvironment: ObservableObject {
             }
         }
 
+        Task {
+            for await progress in progressStream {
+                if case .downloading = progress, self.sapDownloadStartedAt == nil {
+                    self.sapDownloadStartedAt = Date()
+                }
+                self.sapAssetProgress = progress
+            }
+        }
+
         // Restore session (token lives in the Keychain). A corrupt blob
         // fails to decode — treat that as signed out and drop it.
         Task { [client] in
@@ -93,6 +108,8 @@ public final class AppEnvironment: ObservableObject {
     /// calls this again with the six-digit code.
     @discardableResult
     public func signIn(email: String, password: String, twoFactorCode: String? = nil) async -> Result<AppleAccountSession, AppStoreError> {
+        sapAssetProgress = nil
+        sapDownloadStartedAt = nil
         isAuthenticating = true
         defer { isAuthenticating = false }
         do {

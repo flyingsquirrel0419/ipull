@@ -2,6 +2,15 @@
 
 All notable, user-visible changes are listed here. Dates are ISO 8601.
 
+## [0.3.1] - 2026-09-24
+
+### Changed
+
+- Show Apple sign-in asset download progress, downloaded size, and estimated
+  remaining time during the first sign-in.
+- Combine progress from both download parts and show asset preparation after
+  the transfer completes.
+
 ## [0.3.0] - 2026-09-24
 
 ### Changed

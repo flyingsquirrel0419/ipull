@@ -127,12 +127,44 @@ struct AccountView: View {
         }
         if environment.isAuthenticating && !environment.needsTwoFactorCode {
             Section {
-                Label("Preparing secure signing… this can take a few minutes on first sign-in.",
-                      systemImage: "arrow.down.circle")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
+                if let progress = environment.sapAssetProgress {
+                    switch progress {
+                    case .downloading(let completed, let total):
+                        VStack(alignment: .leading, spacing: 8) {
+                            Label("Downloading sign-in assets from Apple", systemImage: "arrow.down.circle")
+                            ProgressView(value: Double(completed), total: Double(max(total, 1)))
+                            Text(downloadDetail(completed: completed, total: total))
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+                        }
+                    case .extracting:
+                        Label("Preparing downloaded sign-in assets…", systemImage: "archivebox")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+                } else {
+                    Label("Preparing secure signing… first sign-in downloads assets from Apple.",
+                          systemImage: "arrow.down.circle")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
             }
         }
+    }
+
+    private func downloadDetail(completed: Int64, total: Int64) -> String {
+        let received = ByteCountFormatter.string(fromByteCount: completed, countStyle: .file)
+        let expected = ByteCountFormatter.string(fromByteCount: total, countStyle: .file)
+        guard let started = environment.sapDownloadStartedAt else {
+            return "\(received) / \(expected)"
+        }
+        let elapsed = Date().timeIntervalSince(started)
+        guard elapsed >= 5, completed >= 1_048_576, total > completed else {
+            return "\(received) / \(expected) · Estimating time remaining…"
+        }
+        let seconds = Int64(Double(total - completed) * elapsed / Double(completed))
+        let minutes = max(1, (seconds + 59) / 60)
+        return "\(received) / \(expected) · About \(minutes) min remaining"
     }
 
     private var actionSection: some View {

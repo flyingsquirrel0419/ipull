@@ -29,6 +29,34 @@ public protocol SAPAssetProviding: Sendable {
     func load() async throws -> SAPAssetBundle
 }
 
+public enum SAPAssetProgress: Sendable, Equatable {
+    case downloading(completedBytes: Int64, totalBytes: Int64)
+    case extracting
+}
+
+/// Combines callbacks from simultaneous range requests. URLSession invokes
+/// progress on delegate queues, so updates must be synchronized.
+final class SAPDownloadProgress: @unchecked Sendable {
+    private let lock = NSLock()
+    private var completed: [Int64]
+    private let total: Int64
+    private let report: @Sendable (SAPAssetProgress) -> Void
+
+    init(parts: Int, total: Int64, report: @escaping @Sendable (SAPAssetProgress) -> Void) {
+        completed = Array(repeating: 0, count: parts)
+        self.total = total
+        self.report = report
+    }
+
+    func update(part: Int, bytes: Int64) {
+        lock.lock()
+        completed[part] = max(0, bytes)
+        let sum = min(total, completed.reduce(0, +))
+        lock.unlock()
+        report(.downloading(completedBytes: sum, totalBytes: total))
+    }
+}
+
 /// Loads SAP assets from cache, or downloads them from Apple's update
 /// package and extracts them from its bzip2-compressed CPIO Scripts member.
 /// Assets are verified against pinned SHA-256 digests and cached under
@@ -68,9 +96,12 @@ public final class SAPAssets: SAPAssetProviding, @unchecked Sendable {
 
     private let http: HTTPClient
     private let cacheDirectory: URL
+    private let progress: (@Sendable (SAPAssetProgress) -> Void)?
 
-    public init(http: HTTPClient, cacheDirectory: URL? = nil) {
+    public init(http: HTTPClient, cacheDirectory: URL? = nil,
+                progress: (@Sendable (SAPAssetProgress) -> Void)? = nil) {
         self.http = http
+        self.progress = progress
         if let cacheDirectory {
             self.cacheDirectory = cacheDirectory
         } else {
@@ -149,6 +180,7 @@ public final class SAPAssets: SAPAssetProviding, @unchecked Sendable {
                 do {
                     try await performParallelDownload(request: HTTPRequest(url: Self.updateURL, headers: ["User-Agent": "iPull/1.0"]),
                                                       to: tempURL, totalSize: total)
+                    progress?(.extracting)
                     let package = try Data(contentsOf: tempURL, options: .mappedIfSafe)
                     return try extractFrom(package: package)
                 } catch {
@@ -176,6 +208,7 @@ public final class SAPAssets: SAPAssetProviding, @unchecked Sendable {
             }
         }
         if let lastError { throw lastError }
+        progress?(.extracting)
         let package = try Data(contentsOf: tempURL, options: .mappedIfSafe)
         return try extractFrom(package: package)
     }
@@ -183,10 +216,12 @@ public final class SAPAssets: SAPAssetProviding, @unchecked Sendable {
     /// One download attempt: stream to disk when supported, else buffered.
     private func performDownload(request: HTTPRequest, to destination: URL) async throws {
         if let streaming = http as? StreamingHTTPClient {
+            let progress = self.progress
             let response = try await streaming.download(request, to: destination) { written, total in
                 let writtenMB = written / 1_048_576
                 if let total {
                     Log.info(.auth, "SAP assets: \(writtenMB) MB / \(total / 1_048_576) MB")
+                    progress?(.downloading(completedBytes: written, totalBytes: total))
                 } else {
                     Log.info(.auth, "SAP assets: \(writtenMB) MB")
                 }
@@ -215,6 +250,8 @@ public final class SAPAssets: SAPAssetProviding, @unchecked Sendable {
     private func performParallelDownload(request base: HTTPRequest, to destination: URL, totalSize: Int64) async throws {
         let parts = 2
         let chunkSize = totalSize / Int64(parts)
+        let combinedProgress = progress.map { SAPDownloadProgress(parts: parts, total: totalSize, report: $0) }
+        combinedProgress?.update(part: 0, bytes: 0)
         var partURLs: [URL] = []
         defer { for u in partURLs { try? FileManager.default.removeItem(at: u) } }
 
@@ -234,8 +271,9 @@ public final class SAPAssets: SAPAssetProviding, @unchecked Sendable {
                         if let existing = try? FileManager.default.attributesOfItem(atPath: partURL.path),
                            let size = existing[.size] as? Int64, size > 0 {
                             let resumeFrom = start + size
-                            guard resumeFrom < end else { break }
+                            guard resumeFrom <= end else { break }
                             partRequest.headers["Range"] = "bytes=\(resumeFrom)-\(end)"
+                            combinedProgress?.update(part: index, bytes: size)
                             Log.info(.auth, "part \(index) resume from \(size / 1_048_576) MB (attempt \(attempt))")
                         } else {
                             partRequest.headers["Range"] = "bytes=\(start)-\(end)"
@@ -244,13 +282,17 @@ public final class SAPAssets: SAPAssetProviding, @unchecked Sendable {
                             throw SAPAssetsError.downloadFailed("range request required")
                         }
                         do {
-                            let response = try await streaming.download(partRequest, to: partURL, progress: nil)
+                            let response = try await streaming.download(partRequest, to: partURL) { written, _ in
+                                combinedProgress?.update(part: index, bytes: written)
+                            }
                             guard response.statusCode == 206 else {
                                 throw SAPAssetsError.downloadFailed("range request returned \(response.statusCode)")
                             }
                             lastError = nil
+                            combinedProgress?.update(part: index, bytes: end - start + 1)
                             break
                         } catch {
+                            combinedProgress?.update(part: index, bytes: 0)
                             lastError = error
                             Log.error(.auth, "part \(index) attempt \(attempt) failed: \(String(describing: type(of: error)))")
                         }

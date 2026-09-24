@@ -26,7 +26,8 @@ public final class AppStoreClient: Sendable {
     }
 
     /// Live wiring for the iOS app.
-    public static func live(secrets: SecretStore) -> AppStoreClient {
+    public static func live(secrets: SecretStore,
+                            assetProgress: (@Sendable (SAPAssetProgress) -> Void)? = nil) -> AppStoreClient {
         let http = URLSessionHTTPClient()
         let bag = BagService(http: http)
         let guidProvider: @Sendable () throws -> String = {
@@ -34,7 +35,7 @@ public final class AppStoreClient: Sendable {
         }
         let hardwareID = (try? DeviceIdentity.currentGUID(secretStore: secrets))
             .flatMap { Data($0.utf8) } ?? Data()
-        let assets = SAPAssets(http: http)
+        let assets = SAPAssets(http: http, progress: assetProgress)
         let signer = EmulatedSAPSigner(http: http, bagProvider: bag,
                                        assetProvider: assets, hardwareID: hardwareID)
         return AppStoreClient(
