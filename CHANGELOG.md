@@ -2,6 +2,26 @@
 
 All notable, user-visible changes are listed here. Dates are ISO 8601.
 
+## [0.3.27] - 2026-09-25
+
+### Added
+
+- Edge vs backend classification: every authenticate response is tagged
+  layer=EDGE / MZFINANCE / STORE_POD from its headers and body, so a
+  device log separates "2FA never reached the account backend" from
+  "the backend rejected this request" in a single sign-in trace.
+- Request logs now carry authLogicalAttempt / transportAttempt /
+  identityGeneration separately, plus path, query key names, and safe
+  header metadata (pod, itspod, request-UUID presence, Set-Cookie names
+  only — never values).
+- The 2FA verification now targets the store pod that issued the
+  challenge when Apple assigned one (pod response header or a pod
+  redirect), instead of always re-hitting the default endpoint.
+- 2FA submits run up to 4 logical attempts — each with a freshly built
+  body and a fresh SAP signature on the same GUID, machine ID, session,
+  cookies, and pod — to test whether a fresh signature escapes the edge
+  404 window. No identity rotation ever happens during a 2FA challenge.
+
 ## [0.3.26] - 2026-09-25
 
 ### Fixed

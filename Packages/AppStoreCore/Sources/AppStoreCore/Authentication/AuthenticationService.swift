@@ -83,6 +83,9 @@ public final class AuthenticationService: AuthenticationServicing, @unchecked Se
     /// Truncated hash of the GUID that received the 2FA challenge, for
     /// same-guid proof in logs.
     private var challengeGuidHash: String?
+    /// Bumped each time the device identity is rotated; ties a log line to
+    /// one identity across password and 2FA stages.
+    private var identityGeneration = 1
 
     public init(
         http: HTTPClient,
@@ -168,6 +171,19 @@ public final class AuthenticationService: AuthenticationServicing, @unchecked Se
         }
 
         var endpoint = bag.authEndpoint
+        var defaultEndpoint = bag.authEndpoint
+        if normalizedCode != nil, let podHost = assignedPodHost,
+           podHost != defaultEndpoint.host {
+            var podComponents = URLComponents(url: defaultEndpoint, resolvingAgainstBaseURL: false)!
+            podComponents.host = podHost
+            if let podURL = podComponents.url {
+                try? BagService.validate(authEndpoint: podURL)
+                endpoint = podURL
+                Log.info(.auth, "2FA submit targets the pod that issued the challenge: \(podHost)")
+            }
+        }
+        let stage = normalizedCode == nil ? "password" : "2fa"
+        Log.info(.auth, "AUTH FLOW ID=\(Self.shortHash(of: guid)) stage=\(stage) identityGeneration=\(identityGeneration)")
         // ipatool's loginRequest shapes: the desktop Configurator sends
         // attempt "4" with createSession "true" for password-only sign-in,
         // and the two-factor verification is a fresh loginRequest with
@@ -179,9 +195,19 @@ public final class AuthenticationService: AuthenticationServicing, @unchecked Se
         var rateLimitRetries = 0
         var didRotateGUID = false
 
-        // Allow the normal retry and redirect in addition to rate-limit
-        // retries and the one-time GUID rotation retry.
-        for _ in 0..<(4 + Self.maxRateLimitRetries + 1) {
+        // Logical authentication attempts (fresh body + fresh SAP signature
+        // each round) vs transport retries (same body, transient statuses).
+        // Password stage: 1 logical attempt + one identity rotation. 2FA:
+        // up to 4 logical attempts on the same identity, per the on-device
+        // experiment to learn whether a fresh signature escapes the edge
+        // 404 window.
+        let maxLogicalAttempts = normalizedCode == nil ? 2 : 4
+        var logicalAttempt = 0
+        outer: while logicalAttempt < maxLogicalAttempts {
+            logicalAttempt += 1
+            var transportAttempt = 0
+            for _ in 0..<(1 + Self.maxRateLimitRetries + 1) {
+                transportAttempt += 1
             let passwordField = password + (normalizedCode ?? "")
             let body = try Self.authRequestBody(
                 appleID: trimmedEmail,
@@ -207,7 +233,6 @@ public final class AuthenticationService: AuthenticationServicing, @unchecked Se
                 Log.error(.auth, "SAP signing failed: \(String(describing: type(of: error)))")
                 throw error
             }
-            let stage = normalizedCode == nil ? "password" : "2fa"
             Log.info(.auth,
                 "authenticate request: stage=\(stage) attempt=\(attempt) guidHash=\(Self.shortHash(of: guid)) machineIDHash=\(Self.shortHash(of: guid)) "
                 + "passwordLength=\(password.count) authCodeLength=\(normalizedCode?.count ?? 0) digitsOnly=\(normalizedCode != nil) "
@@ -223,20 +248,23 @@ public final class AuthenticationService: AuthenticationServicing, @unchecked Se
             )
             requestSequence += 1
             let requestID = (normalizedCode == nil ? "AUTH-PW-" : "AUTH-2FA-") + String(format: "%04d", requestSequence)
+            let endpointComponents = URLComponents(url: endpoint, resolvingAgainstBaseURL: false)
+            let queryKeys = endpointComponents?.queryItems?.map { $0.name }.sorted().joined(separator: ",") ?? ""
             let cookieNames = await (http as? CookieInspecting)?.cookieNames(for: endpoint) ?? []
             Log.info(.auth,
                 "[auth][request] id=\(requestID) stage=\(stage) host=\(endpoint.host ?? "?") "
+                + "path=\(endpoint.path) queryKeys=[\(queryKeys)] "
+                + "authLogicalAttempt=\(logicalAttempt) transportAttempt=\(transportAttempt) identityGeneration=\(identityGeneration) "
                 + "guidHash=\(Self.shortHash(of: guid)) machineIDHash=\(Self.shortHash(of: guid)) "
                 + "assignedPod=\(assignedPodHost ?? "nil") cookieCount=\(cookieNames.count) cookies=\(cookieNames.map { $0 + ":present" }.joined(separator: ","))")
             let response: HTTPResponse
             do {
                 progress?(.authenticating)
                 response = try await http.send(request, body: body)
-                let serverHint = [response.header("server"), response.header("x-apple-request-uuid"),
-                                  response.header("x-daiquiri-instance")].compactMap { $0 }.joined(separator: " ")
+                let layer = AppleAuthResponseLayer.classify(response)
                 Log.info(.auth,
-                    "[auth][response] id=\(requestID) status=\(response.statusCode) stage=\(stage) "
-                    + "pod=\(response.header("pod") ?? "nil") location=\(response.header("location") ?? "nil") [\(serverHint)]")
+                    "[auth][response] id=\(requestID) status=\(response.statusCode) stage=\(stage) layer=\(layer.rawValue) "
+                    + AppleAuthResponseLayer.describe(response))
                 if let pod = response.header("pod") {
                     assignedPodHost = pod
                 }
@@ -296,7 +324,8 @@ public final class AuthenticationService: AuthenticationServicing, @unchecked Se
                 // flagged account terminates after the rotated sequence.
                 if !didRotateGUID {
                     didRotateGUID = true
-                    Log.info(.auth, "guid rotated; retrying with fresh identity")
+                    identityGeneration += 1
+                    Log.info(.auth, "guid rotated; retrying with fresh identity (identityGeneration=\(identityGeneration))")
                     let freshGUID = try DeviceIdentity.rotateGUID(secretStore: secrets)
                     guid = freshGUID
                     signer = try await signerFactory(Data(freshGUID.utf8))
@@ -409,7 +438,8 @@ public final class AuthenticationService: AuthenticationServicing, @unchecked Se
             }
 
             throw AppStoreError.unknown(customerMessage ?? failureType ?? "Authentication failed")
-        }
+            } // transport for
+        } // outer while
 
         throw AppStoreError.authenticationFailed
     }
@@ -425,6 +455,56 @@ public final class AuthenticationService: AuthenticationServicing, @unchecked Se
     /// the raw GUID/machine ID: Apple binds challenges to it.
     static func shortHash(of string: String) -> String {
         String(SHA256Streamer.hash(data: Data(string.utf8)).prefix(12))
+    }
+
+    /// Which Apple layer answered. An empty/HTML 404 with only edge headers
+    /// never reached MZFinance; a plist verdict, request UUID, or pod
+    /// headers prove backend reach. This classification is what separates
+    /// a 2FA payload-parity bug from a transient edge block.
+    enum AppleAuthResponseLayer: String, Sendable {
+        case edge = "EDGE"
+        case mzFinance = "MZFINANCE"
+        case storePod = "STORE_POD"
+        case unknown = "UNKNOWN"
+
+        static func classify(_ response: HTTPResponse) -> AppleAuthResponseLayer {
+            let hasPlist = (try? PropertyListSerialization.propertyList(from: response.data, format: nil)) != nil
+            if response.header("pod") != nil || response.header("itspod") != nil { return .storePod }
+            if response.header("x-apple-request-uuid") != nil
+                || response.header("apple-originating-system") != nil
+                || response.header("x-responding-instance") != nil
+                || hasPlist { return .mzFinance }
+            if response.statusCode >= 500 { return .edge }
+            if response.statusCode == 404 && response.data.isEmpty { return .edge }
+            return .unknown
+        }
+
+        /// Safe header metadata for logs: names and presence only, never
+        /// cookie values or signed payloads.
+        static func describe(_ response: HTTPResponse) -> String {
+            let setCookies = response.headers
+                .filter { $0.key.caseInsensitiveCompare("set-cookie") == .orderedSame }
+                .flatMap { $0.value.components(separatedBy: ",") }
+                .compactMap { $0.trimmingCharacters(in: .whitespaces).components(separatedBy: "=").first }
+                .filter { !$0.isEmpty }
+            let fields: [(String, String?)] = [
+                ("contentType", response.header("content-type")),
+                ("locationHost", response.header("location").flatMap { URL(string: $0)?.host }),
+                ("pod", response.header("pod")),
+                ("itspod", response.header("itspod")),
+                ("aos", response.header("apple-originating-system")),
+                ("server", response.header("server")),
+            ]
+            var parts = fields.map { name, value in
+                "\(name)=\(value ?? "nil")"
+            }
+            parts.append("requestUUIDPresent=\(response.header("x-apple-request-uuid") != nil)")
+            parts.append("jingleKeyPresent=\(response.header("x-apple-jingle-correlation-key") != nil)")
+            parts.append("respondingInstancePresent=\(response.header("x-responding-instance") != nil)")
+            parts.append("xDaiquiriInstancePresent=\(response.header("x-daiquiri-instance") != nil)")
+            parts.append("setCookieNames=[\(setCookies.joined(separator: ","))]")
+            return parts.joined(separator: " ")
+        }
     }
 
     /// Structured end-of-flow diagnostics (spec §26). No secrets: only
