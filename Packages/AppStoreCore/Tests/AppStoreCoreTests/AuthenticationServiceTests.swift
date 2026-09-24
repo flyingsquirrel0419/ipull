@@ -287,6 +287,59 @@ final class AuthenticationServiceTests: XCTestCase {
         XCTAssertEqual(http.requestCount, 4)
     }
 
+    func testTwoFactor204And5xxRetryWithoutRotation() async throws {
+        let http = ScriptedHTTP()
+        // A 204 and a bodyless 500 on the 2FA submit are transient, not a
+        // wrong code: retry on the same GUID/session, then succeed.
+        http.responses = [
+            HTTPResponse(statusCode: 204, headers: [:], data: Data()),
+            HTTPResponse(statusCode: 500, headers: [:], data: Data()),
+            HTTPResponse(statusCode: 200,
+                headers: ["X-Set-Apple-Store-Front": "143441-1,29"],
+                data: plist(["dsPersonId": "1", "passwordToken": "tok"])),
+        ]
+        let factory = RecordingSignerFactory()
+        let secrets = InMemorySecretStore()
+        try secrets.save(Data("AABBCCDDEEFF".utf8), for: DeviceIdentity.keychainKey)
+        let service = AuthenticationService(
+            http: http,
+            bagProvider: MockBag(),
+            signerFactory: { id in try await factory.make(id) },
+            secrets: secrets,
+            sleep: { _ in }
+        )
+
+        let result = try await service.signIn(email: "u@e.com", password: "pw", twoFactorCode: "123456")
+        guard case .success = result else { return XCTFail("Expected success after transient retries") }
+        XCTAssertEqual(factory.hardwareIDs.count, 1)
+        XCTAssertEqual(http.requestCount, 3)
+    }
+
+    func testPasswordStage204RetriesThenSucceeds() async throws {
+        let http = ScriptedHTTP()
+        http.responses = [
+            HTTPResponse(statusCode: 204, headers: [:], data: Data()),
+            HTTPResponse(statusCode: 503, headers: [:], data: Data()),
+            HTTPResponse(statusCode: 200,
+                headers: ["X-Set-Apple-Store-Front": "143441-1,29"],
+                data: plist(["dsPersonId": "1", "passwordToken": "tok"])),
+        ]
+        let factory = RecordingSignerFactory()
+        let service = AuthenticationService(
+            http: http,
+            bagProvider: MockBag(),
+            signerFactory: { id in try await factory.make(id) },
+            secrets: InMemorySecretStore(),
+            sleep: { _ in }
+        )
+
+        let result = try await service.signIn(email: "u@e.com", password: "pw", twoFactorCode: nil)
+        guard case .success = result else { return XCTFail("Expected success after transient retries") }
+        // Retries within budget: no rotation needed.
+        XCTAssertEqual(factory.hardwareIDs.count, 1)
+        XCTAssertEqual(http.requestCount, 3)
+    }
+
     func testSessionNeverPrintsToken() {
         let session = AppleAccountSession(
             email: "u@e.com", displayName: "U", directoryServicesID: "1",

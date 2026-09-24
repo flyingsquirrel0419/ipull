@@ -179,11 +179,16 @@ public final class AuthenticationService: AuthenticationServicing, @unchecked Se
                 attempt: attempt,
                 includeCreateSession: includeCreateSession
             )
+            // Signed-body parity telemetry: the exact bytes handed to the
+            // signer are the exact bytes sent through URLSession (single
+            // immutable Data value, no reserialization). These hashes let a
+            // device log prove 2FA payload parity without exposing secrets.
+            let bodySHA = SHA256Streamer.hash(data: body)
             let signature: String
             do {
                 progress?(.signingRequest)
                 signature = try await signer.sign(body: body)
-                Log.info(.auth, "SAP signature produced (attempt \(attempt))")
+                Log.info(.auth, "SAP signature produced (attempt \(attempt)); signedBodySHA256=\(bodySHA)")
             } catch {
                 // Log only the error type: emulator errors may embed the
                 // signed body, which contains the password in percent-encoded
@@ -191,6 +196,11 @@ public final class AuthenticationService: AuthenticationServicing, @unchecked Se
                 Log.error(.auth, "SAP signing failed: \(String(describing: type(of: error)))")
                 throw error
             }
+            let stage = normalizedCode == nil ? "password" : "2fa"
+            Log.info(.auth,
+                "authenticate request: stage=\(stage) attempt=\(attempt) guidHash=\(Self.shortHash(of: guid)) machineIDHash=\(Self.shortHash(of: guid)) "
+                + "passwordLength=\(password.count) authCodeLength=\(normalizedCode?.count ?? 0) digitsOnly=\(normalizedCode != nil) "
+                + "combinedPasswordLength=\(passwordField.count) bodySHA256=\(bodySHA)")
 
             let request = HTTPRequest(
                 url: endpoint,
@@ -212,62 +222,50 @@ public final class AuthenticationService: AuthenticationServicing, @unchecked Se
                 throw error
             }
 
-            if response.statusCode == 429 {
-                let retryAfter = response.header("Retry-After").flatMap { Int($0) }
+            // Transient statuses (204/404/429/5xx) are never a credential
+            // verdict — Apple answers them while an identity or challenge
+            // state propagates across edge nodes. ipatool retries exactly
+            // this set with 10/20/30s backoff and keeps the same GUID.
+            // A non-empty body on a 404/5xx still carries a plist verdict,
+            // which is parsed below; only bodyless transient responses and
+            // 204/429 retry here.
+            let isTransient = response.statusCode == 204
+                || response.statusCode == 429
+                || (response.statusCode == 404 && response.data.isEmpty)
+                || (response.statusCode >= 500 && response.statusCode < 600 && response.data.isEmpty)
+            if isTransient {
+                let stage = normalizedCode == nil ? "password" : "2fa"
                 if rateLimitRetries < Self.maxRateLimitRetries {
+                    let retryAfter = response.header("Retry-After").flatMap { Int($0) }
                     let backoff = Self.retryBackoffSeconds[min(rateLimitRetries, Self.retryBackoffSeconds.count - 1)]
                     let delay = min(
                         max(UInt64(max(retryAfter ?? 0, 0)), backoff),
                         Self.rateLimitMaxDelaySeconds
                     )
                     rateLimitRetries += 1
-                    Log.info(.auth, "authenticate rate limited; retry \(rateLimitRetries) after \(delay)s")
+                    Log.info(.auth, "authenticate transient HTTP \(response.statusCode) (stage=\(stage)); retry \(rateLimitRetries) after \(delay)s")
                     progress?(.retryingAfterRateLimit(seconds: delay))
                     await sleep(delay * 1_000_000_000)
                     continue
                 }
-                Log.error(.auth, "authenticate still rate limited after \(rateLimitRetries) retries")
-                throw AppStoreError.rateLimited(retryAfterSeconds: retryAfter)
-            }
-
-            // Apple intermittently answers authenticate with an empty 404
-            // (transient; observed on-device right after the 2FA prompt).
-            // Retry it like a rate limit, with backoff.
-            if response.statusCode == 404 && response.data.isEmpty {
-                // 2FA verification path: the challenge is bound to this
-                // GUID and SAP session, so rotation would break it. Retry
-                // without rotating; after 3 attempts the challenge has
-                // likely expired, so ask for a fresh code.
+                Log.error(.auth, "authenticate still HTTP \(response.statusCode) after \(rateLimitRetries) retries (stage=\(stage))")
                 if normalizedCode != nil {
-                    if rateLimitRetries < Self.maxRateLimitRetries {
-                        let delay = Self.retryBackoffSeconds[min(rateLimitRetries, Self.retryBackoffSeconds.count - 1)]
-                        rateLimitRetries += 1
-                        Log.info(.auth, "authenticate empty 404 on 2FA verify; retry \(rateLimitRetries) without rotation after \(delay)s")
-                        progress?(.retryingAfterRateLimit(seconds: delay))
-                        await sleep(delay * 1_000_000_000)
-                        continue
-                    }
-                    Log.error(.auth, "authenticate still 404 on 2FA verify after \(rateLimitRetries) retries")
+                    // The 2FA challenge is bound to this GUID and SAP
+                    // session; rotating here would break verification
+                    // (failureType 5020). A persistent transient on a 2FA
+                    // submit most likely means the code expired during the
+                    // retry window, so ask for a fresh one.
                     throw AppStoreError.invalidTwoFactorCode
                 }
-                // Password-only path: rotation is safe (no challenge to lose).
-                if rateLimitRetries < Self.maxRateLimitRetries {
-                    let delay = Self.retryBackoffSeconds[min(rateLimitRetries, Self.retryBackoffSeconds.count - 1)]
-                    rateLimitRetries += 1
-                    Log.info(.auth, "authenticate empty 404; retry \(rateLimitRetries) after \(delay)s")
-                    progress?(.retryingAfterRateLimit(seconds: delay))
-                    await sleep(delay * 1_000_000_000)
-                    continue
+                if response.statusCode == 429 {
+                    throw AppStoreError.rateLimited(retryAfterSeconds: response.header("Retry-After").flatMap { Int($0) })
                 }
-                // Persistent empty 404 after all retries: Apple has flagged
-                // this device identity server-side. Rotate the GUID once
-                // per sign-in — a fresh GUID in both the SAP signer
-                // (hardware ID) and the request body is the only app-side
-                // recovery lever. The post-rotation attempt counter resets
-                // to 1 (attempt 1 is a fresh start throughout this flow),
-                // which re-arms the retry budget; rotation itself is not
-                // re-armed, so a flagged account terminates after the
-                // rotated sequence instead of looping.
+                // Persistent empty 404/204/5xx on the password step: Apple
+                // has flagged this device identity server-side. Rotate the
+                // GUID once per sign-in — a fresh GUID in both the SAP
+                // signer (hardware ID) and the request body is the only
+                // app-side recovery lever. Rotation is not re-armed, so a
+                // flagged account terminates after the rotated sequence.
                 if !didRotateGUID {
                     didRotateGUID = true
                     Log.info(.auth, "guid rotated; retrying with fresh identity")
@@ -277,7 +275,6 @@ public final class AuthenticationService: AuthenticationServicing, @unchecked Se
                     rateLimitRetries = 0
                     continue
                 }
-                Log.error(.auth, "authenticate still 404 after \(rateLimitRetries) retries")
                 throw AppStoreError.networkUnavailable
             }
 
@@ -373,9 +370,17 @@ public final class AuthenticationService: AuthenticationServicing, @unchecked Se
         throw AppStoreError.authenticationFailed
     }
 
+    /// Strip everything but ASCII digits (a pasted code can carry spaces or
+    /// bracketed-paste markers) and require exactly six.
     static func normalizeTwoFactorCode(_ raw: String) -> String? {
         let digits = raw.filter { $0 >= "0" && $0 <= "9" }
         return digits.count == 6 ? digits : nil
+    }
+
+    /// Truncated SHA-256 of an identifier for log correlation. Never log
+    /// the raw GUID/machine ID: Apple binds challenges to it.
+    static func shortHash(of string: String) -> String {
+        String(SHA256Streamer.hash(data: Data(string.utf8)).prefix(12))
     }
 
     /// XML plist body matching the desktop client (ipatool's XMLPayload),

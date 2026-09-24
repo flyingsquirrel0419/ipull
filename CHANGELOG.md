@@ -2,6 +2,24 @@
 
 All notable, user-visible changes are listed here. Dates are ISO 8601.
 
+## [0.3.25] - 2026-09-25
+
+### Fixed
+
+- Treat HTTP 204, bodyless 404, 429, and bodyless 5xx from authenticate
+  as transient on both the password and 2FA stages, with ipatool's
+  10/20/30s backoff on the same GUID and SAP session. These statuses are
+  never a wrong-password or wrong-code verdict; a persistent transient on
+  a 2FA submit now asks for a fresh code instead of rotating the identity.
+
+### Added
+
+- Secret-free auth telemetry in the debug log: stage (password/2fa),
+  attempt, truncated guidHash/machineIDHash, password and combined-field
+  lengths, authCodeLength/digitsOnly, and bodySHA256/signedBodySHA256 so
+  a device log can prove the signed body is byte-for-byte the sent body
+  without exposing any credential material.
+
 ## [0.3.24] - 2026-09-25
 
 ### Fixed
