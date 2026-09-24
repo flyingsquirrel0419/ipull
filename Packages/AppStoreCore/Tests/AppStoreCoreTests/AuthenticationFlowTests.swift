@@ -79,15 +79,17 @@ final class AuthenticationFlowTests: XCTestCase {
         // SAP signing must have happened before authenticate.
         XCTAssertTrue(signer.signCalls > 0, "signing must run before authenticate")
 
-        // The authenticate body must be form-urlencoded — the shape that
-        // reached 2FA on-device.
+        // The authenticate body must be an XML plist — the desktop-client
+        // format Apple's servers accept.
         let body = try XCTUnwrap(signer.lastBody)
-        let text = String(decoding: body, as: UTF8.self)
-        XCTAssertTrue(text.contains("appleId=user@example.com") || text.contains("appleId=user%40example.com"), text)
-        XCTAssertTrue(text.contains("password=pw"), text)
-        XCTAssertTrue(text.contains("guid=AABBCCDDEEFF"), text)
-        XCTAssertTrue(text.contains("why=signIn"), text)
-        XCTAssertTrue(text.contains("attempt=1"), text)
+        let plist = try XCTUnwrap(
+            PropertyListSerialization.propertyList(from: body, format: nil) as? [String: Any],
+            "auth body must be an XML plist")
+        XCTAssertEqual(plist["appleId"] as? String, "user@example.com")
+        XCTAssertEqual(plist["password"] as? String, "pw")
+        XCTAssertEqual(plist["guid"] as? String, "AABBCCDDEEFF")
+        XCTAssertEqual(plist["why"] as? String, "signIn")
+        XCTAssertEqual(plist["attempt"] as? String, "1")
     }
 
     final class StubSigner: SAPSigning, @unchecked Sendable {

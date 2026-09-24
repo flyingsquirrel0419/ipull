@@ -2,6 +2,15 @@
 
 All notable, user-visible changes are listed here. Dates are ISO 8601.
 
+## [0.3.18] - 2026-09-24
+
+### Fixed
+
+- Encode the authenticate body as an XML plist with Apple's own
+  PropertyListSerialization (the same serializer Apple's Configurator
+  uses). The form-urlencoded body reached the server but the legacy
+  commerce endpoint answered 404; the plist body is what it parses.
+
 ## [0.3.17] - 2026-09-24
 
 ### Changed
