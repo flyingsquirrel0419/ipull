@@ -43,10 +43,17 @@ public final class AppStoreClient: Sendable {
                 progress?(.extractingAssets)
             }
         }
+        // Factory so AuthenticationService can mint a fresh signer when the
+        // GUID rotates mid-login (the SAP hardware ID must match the new
+        // GUID in the authenticate body).
+        let signerFactory: @Sendable (Data) async throws -> any SAPSigning = { id in
+            EmulatedSAPSigner(http: http, bagProvider: bag,
+                              assetProvider: assets, hardwareID: id, progress: progress)
+        }
         let signer = EmulatedSAPSigner(http: http, bagProvider: bag,
                                        assetProvider: assets, hardwareID: hardwareID, progress: progress)
         return AppStoreClient(
-            auth: AuthenticationService(http: http, bagProvider: bag, signer: signer, secrets: secrets, guidProvider: guidProvider, progress: progress),
+            auth: AuthenticationService(http: http, bagProvider: bag, signerFactory: signerFactory, secrets: secrets, progress: progress),
             search: SearchService(http: http),
             versions: VersionService(http: http, bagProvider: bag, guidProvider: guidProvider),
             purchase: PurchaseService(http: http, bagProvider: bag, guidProvider: guidProvider),

@@ -15,6 +15,16 @@ final class DeviceIdentityTests: XCTestCase {
         XCTAssertEqual(first, second)
     }
 
+    func testRotateGUIDReplacesPersistedIdentity() throws {
+        let store = InMemorySecretStore()
+        let original = try DeviceIdentity.currentGUID(secretStore: store)
+        let rotated = try DeviceIdentity.rotateGUID(secretStore: store)
+        XCTAssertTrue(DeviceIdentity.isValidGUID(rotated))
+        XCTAssertNotEqual(rotated, original, "rotation must not re-issue the vendor-derived GUID")
+        // Subsequent lookups must return the rotated identity.
+        XCTAssertEqual(try DeviceIdentity.currentGUID(secretStore: store), rotated)
+    }
+
     func testValidation() {
         XCTAssertTrue(DeviceIdentity.isValidGUID("AABBCCDDEEFF"))
         XCTAssertFalse(DeviceIdentity.isValidGUID("aabbccddeeff")) // lowercase

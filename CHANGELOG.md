@@ -2,6 +2,24 @@
 
 All notable, user-visible changes are listed here. Dates are ISO 8601.
 
+## [0.3.19] - 2026-09-24
+
+### Fixed
+
+- Recover from a persistent empty 404 on authenticate by rotating the
+  device GUID once per sign-in: Apple flags the device identity
+  server-side after an abandoned two-factor prompt, and a fresh GUID in
+  both the SAP signer and the request body is the only app-side recovery.
+- Stop the two-factor code field from crashing LiveContainer by dropping
+  the oneTimeCode content type (SMS autofill does not apply to
+  trusted-device codes); the number pad stays.
+
+### Changed
+
+- Retry backoff for empty-404 and 429 responses now follows the desktop
+  client's 10/20/30-second schedule instead of 1/2/4, which hammered
+  Apple's edge nodes inside the 404 window.
+
 ## [0.3.18] - 2026-09-24
 
 ### Fixed

@@ -61,7 +61,7 @@ final class AuthenticationServiceTests: XCTestCase {
 
         _ = try await service.signIn(email: "u@e.com", password: "pw", twoFactorCode: nil)
         XCTAssertEqual(recorder.values, [
-            .fetchingConfiguration, .signingRequest, .authenticating, .savingSession,
+            .initializingSigner, .fetchingConfiguration, .signingRequest, .authenticating, .savingSession,
         ])
     }
 
@@ -215,8 +215,8 @@ final class AuthenticationServiceTests: XCTestCase {
         let result = try await service.signIn(email: "u@e.com", password: "pw", twoFactorCode: nil)
         guard case .success = result else { return XCTFail("Expected success after retries") }
 
-        // 1s floor, then max(2s, Retry-After 5s) = 5s; both under the 30s cap.
-        XCTAssertEqual(sleeps.delaysNs, [1_000_000_000, 5_000_000_000])
+        // 10s floor, then max(20s, Retry-After 5s) = 20s; under the 30s cap.
+        XCTAssertEqual(sleeps.delaysNs, [10_000_000_000, 20_000_000_000])
         XCTAssertEqual(http.requestCount, 3)
     }
 
@@ -329,5 +329,90 @@ final class AuthenticationServiceTests: XCTestCase {
         try await service.signOut()
         let signedOutSession = try await service.restoreSession()
         XCTAssertNil(signedOutSession)
+    }
+
+    // MARK: - GUID rotation on persistent empty 404
+
+    /// Records the hardware IDs the signer factory was asked to build with.
+    final class RecordingSignerFactory: @unchecked Sendable {
+        private(set) var hardwareIDs: [Data] = []
+        func make(_ hardwareID: Data) async throws -> any SAPSigning {
+            hardwareIDs.append(hardwareID)
+            return MockSigner()
+        }
+    }
+
+    func testPersistentEmpty404RotatesGUIDAndRetries() async throws {
+        let http = ScriptedHTTP()
+        // Four empty 404s (initial + 3 retries) exhaust the retry budget,
+        // then the rotated identity's request succeeds.
+        http.responses = [
+            HTTPResponse(statusCode: 404, headers: [:], data: Data()),
+            HTTPResponse(statusCode: 404, headers: [:], data: Data()),
+            HTTPResponse(statusCode: 404, headers: [:], data: Data()),
+            HTTPResponse(statusCode: 404, headers: [:], data: Data()),
+            HTTPResponse(statusCode: 200,
+                headers: ["X-Set-Apple-Store-Front": "143441-1,29"],
+                data: plist(["dsPersonId": "1", "passwordToken": "tok"])),
+        ]
+        let secrets = InMemorySecretStore()
+        try secrets.save(Data("AABBCCDDEEFF".utf8), for: DeviceIdentity.keychainKey)
+        let factory = RecordingSignerFactory()
+        let service = AuthenticationService(
+            http: http,
+            bagProvider: MockBag(),
+            signerFactory: { id in try await factory.make(id) },
+            secrets: secrets,
+            sleep: { _ in }
+        )
+
+        let result = try await service.signIn(email: "u@e.com", password: "pw", twoFactorCode: nil)
+        guard case .success = result else { return XCTFail("Expected success after GUID rotation") }
+
+        // The factory was asked for two signers: one for the stored GUID,
+        // one for the rotated GUID.
+        XCTAssertEqual(factory.hardwareIDs.count, 2)
+        guard factory.hardwareIDs.count == 2 else { return }
+        XCTAssertEqual(factory.hardwareIDs[0], Data("AABBCCDDEEFF".utf8))
+
+        // The rotated GUID was persisted and is a fresh, valid GUID.
+        let stored = try XCTUnwrap(secrets.load(key: DeviceIdentity.keychainKey))
+        let rotatedGUID = try XCTUnwrap(String(data: stored, encoding: .utf8))
+        XCTAssertNotEqual(rotatedGUID, "AABBCCDDEEFF")
+        XCTAssertTrue(DeviceIdentity.isValidGUID(rotatedGUID))
+        XCTAssertEqual(factory.hardwareIDs[1], Data(rotatedGUID.utf8))
+    }
+
+    func testPersistentEmpty404AfterRotationStillFails() async {
+        let http = ScriptedHTTP()
+        // Rotation happens once per sign-in; continued 404s after the
+        // rotated identity also exhausts its retries must throw.
+        http.responses = (0..<12).map { _ in
+            HTTPResponse(statusCode: 404, headers: [:], data: Data())
+        }
+        let secrets = InMemorySecretStore()
+        try? secrets.save(Data("AABBCCDDEEFF".utf8), for: DeviceIdentity.keychainKey)
+        let factory = RecordingSignerFactory()
+        let service = AuthenticationService(
+            http: http,
+            bagProvider: MockBag(),
+            signerFactory: { id in try await factory.make(id) },
+            secrets: secrets,
+            sleep: { _ in }
+        )
+
+        do {
+            _ = try await service.signIn(email: "u@e.com", password: "pw", twoFactorCode: nil)
+            XCTFail("Expected networkUnavailable after rotation also 404s")
+        } catch AppStoreError.networkUnavailable {
+            // expected
+        } catch {
+            XCTFail("Wrong error: \(error)")
+        }
+
+        // One rotation: two signers total, eight requests (two retry
+        // sequences of four).
+        XCTAssertEqual(factory.hardwareIDs.count, 2)
+        XCTAssertEqual(http.requestCount, 8)
     }
 }

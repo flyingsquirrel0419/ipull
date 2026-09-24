@@ -98,7 +98,6 @@ struct AccountView: View {
         Section {
             TextField("123 456", text: $viewModel.twoFactorCode)
                 .keyboardType(.numberPad)
-                .textContentType(.oneTimeCode)
                 .focused($focusedField, equals: .twoFactorCode)
                 .accessibilityLabel("Six-digit verification code")
                 .accessibilityHint("Shown on a device trusted by your Apple Account")

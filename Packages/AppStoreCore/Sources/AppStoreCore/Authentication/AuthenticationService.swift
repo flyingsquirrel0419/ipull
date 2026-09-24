@@ -42,6 +42,9 @@ public protocol AuthenticationServicing: Sendable {
 ///       → on 302 → follow pod redirect with attempt reset to 1
 ///       → on 429 → bounded exponential backoff honoring Retry-After,
 ///         then rethrow .rateLimited
+///       → persistent empty 404 → rotate the device GUID once (Apple flags
+///         the identity server-side), retry with a fresh signer, then
+///         rethrow .networkUnavailable
 ///       → success: dsPersonId + passwordToken + X-Set-Apple-Store-Front
 ///
 /// Passwords are never persisted; only the resulting session token goes to
@@ -49,20 +52,49 @@ public protocol AuthenticationServicing: Sendable {
 public final class AuthenticationService: AuthenticationServicing, @unchecked Sendable {
     public static let sessionKeychainKey = "apple-account-session"
 
-    /// Bounds for 429 handling: bounded exponential backoff (1s, 2s, 4s)
-    /// honoring a server Retry-After hint, capped at 30s.
+    /// Bounds for 429 / empty-404 handling: ipatool's schedule (10s, 20s,
+    /// 30s) honoring a server Retry-After hint, capped at 30s. The old 1/2/4s
+    /// backoff hammered edge nodes inside Apple's 404 window and made a
+    /// flagged identity look persistent.
     static let maxRateLimitRetries = 3
+    static let retryBackoffSeconds: [UInt64] = [10, 20, 30]
     static let rateLimitMaxDelaySeconds: UInt64 = 30
 
     private let http: HTTPClient
     private let bagProvider: BagProviding
-    private let signer: SAPSigning
+    /// Resolved at the start of each signIn from signerFactory with the
+    /// current GUID, and replaced on GUID rotation.
+    private var signer: (any SAPSigning)!
+    private let signerFactory: @Sendable (Data) async throws -> any SAPSigning
     private let secrets: SecretStore
-    private let guidProvider: @Sendable () throws -> String
+    private let identityProvider: @Sendable (SecretStore) throws -> String
     private let sleep: @Sendable (UInt64) async -> Void
     private let progress: (@Sendable (AuthenticationProgress) -> Void)?
 
     public init(
+        http: HTTPClient,
+        bagProvider: BagProviding,
+        signerFactory: @escaping @Sendable (Data) async throws -> any SAPSigning,
+        secrets: SecretStore,
+        identityProvider: (@Sendable (SecretStore) throws -> String)? = nil,
+        sleep: (@Sendable (UInt64) async -> Void)? = nil,
+        progress: (@Sendable (AuthenticationProgress) -> Void)? = nil
+    ) {
+        self.http = http
+        self.bagProvider = bagProvider
+        self.signerFactory = signerFactory
+        self.secrets = secrets
+        self.identityProvider = identityProvider ?? { try DeviceIdentity.currentGUID(secretStore: $0) }
+        self.sleep = sleep ?? { ns in
+            try? await Task.sleep(nanoseconds: ns)
+        }
+        self.progress = progress
+    }
+
+    /// Convenience init for tests: a fixed signer and GUID provider, no
+    /// rotation support. Equivalent to a signerFactory that ignores the
+    /// hardware ID and always returns the same signer.
+    public convenience init(
         http: HTTPClient,
         bagProvider: BagProviding,
         signer: SAPSigning,
@@ -71,15 +103,15 @@ public final class AuthenticationService: AuthenticationServicing, @unchecked Se
         sleep: (@Sendable (UInt64) async -> Void)? = nil,
         progress: (@Sendable (AuthenticationProgress) -> Void)? = nil
     ) {
-        self.http = http
-        self.bagProvider = bagProvider
-        self.signer = signer
-        self.secrets = secrets
-        self.guidProvider = guidProvider
-        self.sleep = sleep ?? { ns in
-            try? await Task.sleep(nanoseconds: ns)
-        }
-        self.progress = progress
+        self.init(
+            http: http,
+            bagProvider: bagProvider,
+            signerFactory: { _ in signer },
+            secrets: secrets,
+            identityProvider: { _ in try guidProvider() },
+            sleep: sleep,
+            progress: progress
+        )
     }
 
     public func signIn(email: String, password: String, twoFactorCode: String?) async throws -> AuthenticationResult {
@@ -98,7 +130,9 @@ public final class AuthenticationService: AuthenticationServicing, @unchecked Se
             normalizedCode = nil
         }
 
-        let guid = try guidProvider()
+        var guid = try identityProvider(secrets)
+        progress?(.initializingSigner)
+        signer = try await signerFactory(Data(guid.utf8))
         progress?(.fetchingConfiguration)
         Log.info(.auth, "sign-in start (guid resolved)")
         let bag: Bag
@@ -117,9 +151,11 @@ public final class AuthenticationService: AuthenticationServicing, @unchecked Se
         var attempt = 1
         var redirectHop = false
         var rateLimitRetries = 0
+        var didRotateGUID = false
 
-        // Allow the normal retry and redirect in addition to rate-limit retries.
-        for _ in 0..<(4 + Self.maxRateLimitRetries) {
+        // Allow the normal retry and redirect in addition to rate-limit
+        // retries and the one-time GUID rotation retry.
+        for _ in 0..<(4 + Self.maxRateLimitRetries + 1) {
             let requestAttempt = redirectHop ? 1 : attempt
             let passwordField = password + (normalizedCode ?? "")
             let body = try Self.authRequestBody(
@@ -164,7 +200,7 @@ public final class AuthenticationService: AuthenticationServicing, @unchecked Se
             if response.statusCode == 429 {
                 let retryAfter = response.header("Retry-After").flatMap { Int($0) }
                 if rateLimitRetries < Self.maxRateLimitRetries {
-                    let backoff = UInt64(1) << rateLimitRetries
+                    let backoff = Self.retryBackoffSeconds[min(rateLimitRetries, Self.retryBackoffSeconds.count - 1)]
                     let delay = min(
                         max(UInt64(max(retryAfter ?? 0, 0)), backoff),
                         Self.rateLimitMaxDelaySeconds
@@ -184,11 +220,30 @@ public final class AuthenticationService: AuthenticationServicing, @unchecked Se
             // Retry it like a rate limit, with backoff.
             if response.statusCode == 404 && response.data.isEmpty {
                 if rateLimitRetries < Self.maxRateLimitRetries {
+                    let delay = Self.retryBackoffSeconds[min(rateLimitRetries, Self.retryBackoffSeconds.count - 1)]
                     rateLimitRetries += 1
-                    let delay = min(UInt64(1) << (rateLimitRetries - 1), Self.rateLimitMaxDelaySeconds)
                     Log.info(.auth, "authenticate empty 404; retry \(rateLimitRetries) after \(delay)s")
                     progress?(.retryingAfterRateLimit(seconds: delay))
                     await sleep(delay * 1_000_000_000)
+                    continue
+                }
+                // Persistent empty 404 after all retries: Apple has flagged
+                // this device identity server-side. Rotate the GUID once
+                // per sign-in — a fresh GUID in both the SAP signer
+                // (hardware ID) and the request body is the only app-side
+                // recovery lever. The post-rotation attempt counter resets
+                // to 1 (attempt 1 is a fresh start throughout this flow),
+                // which re-arms the retry budget; rotation itself is not
+                // re-armed, so a flagged account terminates after the
+                // rotated sequence instead of looping.
+                if !didRotateGUID {
+                    didRotateGUID = true
+                    Log.info(.auth, "guid rotated; retrying with fresh identity")
+                    let freshGUID = try DeviceIdentity.rotateGUID(secretStore: secrets)
+                    guid = freshGUID
+                    signer = try await signerFactory(Data(freshGUID.utf8))
+                    rateLimitRetries = 0
+                    attempt = 1
                     continue
                 }
                 Log.error(.auth, "authenticate still 404 after \(rateLimitRetries) retries")
@@ -205,6 +260,13 @@ public final class AuthenticationService: AuthenticationServicing, @unchecked Se
             }
 
             guard let plist = try? PropertyListSerialization.propertyList(from: response.data, format: nil) as? [String: Any] else {
+                // An empty non-404 body (e.g. an edge node answering 200
+                // with no payload while the identity is flagged) must not
+                // be reported as a credential failure.
+                if response.data.isEmpty {
+                    Log.error(.auth, "empty auth response body (HTTP \(response.statusCode))")
+                    throw AppStoreError.networkUnavailable
+                }
                 Log.error(.auth, "malformed auth response body (\(response.data.count) bytes)")
                 throw AppStoreError.unknown("Malformed authentication response")
             }

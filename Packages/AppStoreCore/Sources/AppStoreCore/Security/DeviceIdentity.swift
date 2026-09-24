@@ -23,6 +23,20 @@ public enum DeviceIdentity {
         return guid
     }
 
+    /// Mint a fresh GUID and persist it, replacing any stored identity.
+    /// Used when Apple flags the current GUID server-side (a persistent
+    /// empty 404 on authenticate); rotating the identity is the only
+    /// app-side lever once the request format itself is ruled out.
+    ///
+    /// Always random: generateGUID() derives from identifierForVendor, which
+    /// is stable and would just re-issue the flagged GUID.
+    @discardableResult
+    public static func rotateGUID(secretStore: SecretStore) throws -> String {
+        let guid = guidFromUUID(UUID())
+        try secretStore.save(Data(guid.utf8), for: keychainKey)
+        return guid
+    }
+
     static func generateGUID() -> String {
         #if canImport(UIKit) && !os(macOS)
         // UIDevice.current is main-actor isolated under Swift 6; GUID
