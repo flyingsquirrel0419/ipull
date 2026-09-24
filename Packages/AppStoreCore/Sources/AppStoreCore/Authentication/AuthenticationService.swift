@@ -143,7 +143,7 @@ public final class AuthenticationService: AuthenticationServicing, @unchecked Se
             signer = try await signerFactory(Data(guid.utf8))
         }
         progress?(.fetchingConfiguration)
-        Log.info(.auth, "sign-in start (guid resolved, (Self.appVersionDescription))")
+        Log.info(.auth, "sign-in start (guid resolved, \(Self.appVersionDescription))")
         let bag: Bag
         do {
             bag = try await bagProvider.bag(guid: guid)

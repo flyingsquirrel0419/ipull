@@ -2,6 +2,18 @@
 
 All notable, user-visible changes are listed here. Dates are ISO 8601.
 
+## [0.3.24] - 2026-09-25
+
+### Fixed
+
+- Send every authenticate POST on a fresh connection (Connection: close),
+  matching ipatool's authentication client which disables keep-alives.
+  A reused pooled connection for the 2FA verification was answered with
+  an empty 404 by Apple's edge even with the correct request shape,
+  cookies, GUID, and SAP session all preserved.
+- The sign-in start log now actually interpolates the app version
+  (v0.3.23 printed the literal template text).
+
 ## [0.3.23] - 2026-09-25
 
 ### Fixed

@@ -56,9 +56,17 @@ public final class URLSessionHTTPClient: HTTPClient, @unchecked Sendable {
     private let session: URLSession
 
     public init() {
-        let configuration = URLSessionConfiguration.default
+        let configuration = URLSessionConfiguration.ephemeral
         configuration.httpCookieAcceptPolicy = .always
         configuration.httpShouldSetCookies = true
+        configuration.httpCookieStorage = HTTPCookieStorage.shared
+        // ipatool's authentication client sets DisableKeepAlives: every
+        // authenticate POST gets a fresh TCP connection. A reused pooled
+        // connection for the 2FA verification is answered with an empty
+        // 404 by Apple's edge (observed on-device with cookies, signer and
+        // GUID all preserved). URLSession has no keep-alive toggle, so
+        // each request explicitly asks the server to close the connection,
+        // which keeps every authenticate POST on a fresh edge connection.
         session = URLSession(configuration: configuration)
     }
 
@@ -69,6 +77,7 @@ public final class URLSessionHTTPClient: HTTPClient, @unchecked Sendable {
         urlRequest.setValue(
             "Configurator/2.17 (Macintosh; OS X 15.2; 24C5089c) AppleWebKit/0620.1.16.11.6",
             forHTTPHeaderField: "User-Agent")
+        urlRequest.setValue("close", forHTTPHeaderField: "Connection")
         for (key, value) in request.headers {
             urlRequest.setValue(value, forHTTPHeaderField: key)
         }
