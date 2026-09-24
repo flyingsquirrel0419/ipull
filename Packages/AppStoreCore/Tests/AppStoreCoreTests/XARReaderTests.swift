@@ -43,6 +43,11 @@ final class XARReaderTests: XCTestCase {
     func testRejectsBadMagic() {
         XCTAssertThrowsError(try XARReader(data: Data(repeating: 0, count: 64)))
     }
+
+    func testParsesRealAppleFileAttributes() {
+        let xml = "<xar><toc><file id=\"3\"><data><length>42</length><offset>19</offset></data><name>Payload</name></file></toc></xar>"
+        XCTAssertEqual(XARReader.parseTOC(xml), [XARReader.Entry(name: "Payload", offset: 19, length: 42)])
+    }
 }
 
 private extension FixedWidthInteger {

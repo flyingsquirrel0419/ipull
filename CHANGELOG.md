@@ -2,6 +2,15 @@
 
 All notable, user-visible changes are listed here. Dates are ISO 8601.
 
+## [0.3.4] - 2026-09-24
+
+### Fixed
+
+- Read Apple's real XAR file entries and extract sign-in binaries from the
+  bzip2-compressed Payload member.
+- Stream CPIO extraction and keep only the four required binaries in memory,
+  avoiding a multi-gigabyte temporary file after download.
+
 ## [0.3.3] - 2026-09-24
 
 ### Fixed

@@ -181,10 +181,12 @@ public final class SAPAssets: SAPAssetProviding, @unchecked Sendable {
                     try await performParallelDownload(request: HTTPRequest(url: Self.updateURL, headers: ["User-Agent": "iPull/1.0"]),
                                                       to: tempURL, totalSize: total)
                     progress?(.extracting)
-                    let package = try Data(contentsOf: tempURL, options: .mappedIfSafe)
-                    return try extractFrom(package: package)
+                    return try extractFrom(packageURL: tempURL)
                 } catch SAPAssetsError.downloadFailed {
                     Log.info(.auth, "range download unsupported; trying single stream")
+                } catch let error as SAPAssetsError {
+                    Log.error(.auth, "SAP asset extraction failed: \(error)")
+                    throw error
                 } catch {
                     Log.error(.auth, "parallel download failed: \(String(describing: type(of: error)))")
                     throw error
@@ -212,8 +214,7 @@ public final class SAPAssets: SAPAssetProviding, @unchecked Sendable {
         }
         if let lastError { throw lastError }
         progress?(.extracting)
-        let package = try Data(contentsOf: tempURL, options: .mappedIfSafe)
-        return try extractFrom(package: package)
+        return try extractFrom(packageURL: tempURL)
     }
 
     /// One download attempt: stream to disk when supported, else buffered.
@@ -336,40 +337,40 @@ public final class SAPAssets: SAPAssetProviding, @unchecked Sendable {
         }
     }
 
-    /// XAR → bzip2 CPIO → extract the four assets, verify digests.
-    private func extractFrom(package: Data) throws -> SAPAssetBundle {
-        let xar = try XARReader(data: package)
-        // The pinned package keeps the files in the "Scripts" member, a
-        // bzip2-compressed CPIO stream starting at byte 0 (verified against
-        // the real package during development — see docs/research).
-        guard let scriptsEntry = xar.entry(named: "Scripts"),
-              let scriptsRaw = xar.bytes(of: scriptsEntry, in: package)
-        else {
-            throw SAPAssetsError.missingFile("Scripts")
+    /// XAR Payload → bzip2 CPIO → extract only the four needed assets.
+    func extractFrom(packageURL: URL) throws -> SAPAssetBundle {
+        let input = try FileHandle(forReadingFrom: packageURL)
+        defer { try? input.close() }
+        let prefix = try input.read(upToCount: 64 * 1024) ?? Data()
+        let xar = try XARReader(data: prefix)
+        guard let payload = xar.entry(named: "Payload") else {
+            throw SAPAssetsError.missingFile("Payload")
+        }
+        let packageSize = (try FileManager.default.attributesOfItem(atPath: packageURL.path)[.size] as? NSNumber)?.uint64Value ?? 0
+        guard xar.heapBase + payload.offset + payload.length <= packageSize else {
+            throw SAPAssetsError.downloadFailed("truncated package")
         }
 
-        // Stream the bzip2 decompression to disk — the ~3.6 GB result
-        // cannot live in device memory.
-        let scriptsTempURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent("ipull-sap-scripts-\(UUID().uuidString).bin")
-        defer { try? FileManager.default.removeItem(at: scriptsTempURL) }
-        try scriptsRaw.write(to: scriptsTempURL, options: .atomic)
-        let cpioURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent("ipull-sap-cpio-\(UUID().uuidString).bin")
-        defer { try? FileManager.default.removeItem(at: cpioURL) }
-        try Bzip2.decompressToFile(source: scriptsTempURL, destination: cpioURL)
-        let cpioData = try Data(contentsOf: cpioURL, options: .mappedIfSafe)
-        let entries = try CPIOReader.entries(in: cpioData)
+        // Keep the compressed member in the package file and process the
+        // decompressed CPIO stream in chunks. Only four target bodies stay
+        // in memory; no multi-gigabyte temporary file is needed.
+        let extractor = CPIOSelectiveExtractor(wanted: Set(Self.requiredFiles.map(\.path)))
+        try Bzip2.decompress(source: packageURL,
+                              offset: xar.heapBase + payload.offset,
+                              length: payload.length) { chunk in
+            try extractor.consume(chunk)
+        }
+        try extractor.finish()
 
         var found: [String: Data] = [:]
         for spec in Self.requiredFiles {
-            guard let entry = entries.first(where: { $0.name == spec.path }) else {
+            guard let body = extractor.files[spec.path] else {
                 throw SAPAssetsError.missingFile(spec.name)
             }
-            guard entry.body.count == spec.size else {
+            guard body.count == spec.size else {
                 throw SAPAssetsError.digestMismatch(spec.name)
             }
-            found[spec.name] = entry.body
+            found[spec.name] = body
         }
 
         let bundle = SAPAssetBundle(

@@ -59,9 +59,15 @@ public struct XARReader {
 
     static func parseTOC(_ xml: String) -> [Entry] {
         var entries: [Entry] = []
-        // Split on <file> blocks; each contains <name>, <data><offset>, <length>.
-        let fileBlocks = xml.components(separatedBy: "<file>")
-        for block in fileBlocks.dropFirst() {
+        // Real Apple TOCs use <file id="…">, while small fixtures use <file>.
+        let pattern = try! NSRegularExpression(pattern: #"<file(?:\s+[^>]*)?>"#)
+        let nsXML = xml as NSString
+        for match in pattern.matches(in: xml, range: NSRange(location: 0, length: nsXML.length)) {
+            let start = match.range.location + match.range.length
+            guard let close = xml.range(of: "</file>", range: Range(NSRange(location: start, length: nsXML.length - start), in: xml)!) else {
+                continue
+            }
+            let block = String(xml[String.Index(utf16Offset: start, in: xml)..<close.lowerBound])
             guard let name = value(of: "name", in: block),
                   let offsetRaw = value(of: "offset", in: block).flatMap(UInt64.init),
                   let lengthRaw = value(of: "length", in: block).flatMap(UInt64.init)

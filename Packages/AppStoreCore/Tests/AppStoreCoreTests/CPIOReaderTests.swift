@@ -37,4 +37,15 @@ final class CPIOReaderTests: XCTestCase {
     func testRejectsBadMagic() {
         XCTAssertThrowsError(try CPIOReader.entries(in: Data("nope".utf8)))
     }
+
+    func testSelectiveStreamingAcrossChunkBoundaries() throws {
+        let archive = makeCPIO()
+        let extractor = CPIOSelectiveExtractor(wanted: ["./b.bin"])
+        for offset in stride(from: 0, to: archive.count, by: 7) {
+            try extractor.consume(archive.subdata(in: offset..<min(offset + 7, archive.count)))
+        }
+        try extractor.finish()
+        XCTAssertEqual(extractor.files.count, 1)
+        XCTAssertEqual(String(data: extractor.files["./b.bin"]!, encoding: .utf8), "world!!")
+    }
 }
