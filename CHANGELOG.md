@@ -2,6 +2,14 @@
 
 All notable, user-visible changes are listed here. Dates are ISO 8601.
 
+## [0.3.16] - 2026-09-24
+
+### Changed
+
+- Revert the authenticate body to the form-urlencoded shape with the simple
+  attempt counter — the combination that reached two-factor on-device. The
+  transient empty-404 retry from 0.3.12 stays in place.
+
 ## [0.3.15] - 2026-09-24
 
 ### Fixed

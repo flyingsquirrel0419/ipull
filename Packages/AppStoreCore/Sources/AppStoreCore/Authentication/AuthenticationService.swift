@@ -120,18 +120,19 @@ public final class AuthenticationService: AuthenticationServicing, @unchecked Se
 
         // Allow the normal retry and redirect in addition to rate-limit retries.
         for _ in 0..<(4 + Self.maxRateLimitRetries) {
+            let requestAttempt = redirectHop ? 1 : attempt
             let passwordField = password + (normalizedCode ?? "")
             let body = try Self.authRequestBody(
                 appleID: trimmedEmail,
                 password: passwordField,
                 guid: guid,
-                twoFactor: normalizedCode != nil
+                attempt: requestAttempt
             )
             let signature: String
             do {
                 progress?(.signingRequest)
                 signature = try await signer.sign(body: body)
-                Log.info(.auth, "SAP signature produced")
+                Log.info(.auth, "SAP signature produced (attempt \(requestAttempt))")
             } catch {
                 // Log only the error type: emulator errors may embed the
                 // signed body, which contains the password in percent-encoded
@@ -281,27 +282,20 @@ public final class AuthenticationService: AuthenticationServicing, @unchecked Se
         return digits.count == 6 ? digits : nil
     }
 
-    /// Body matching the desktop-client flow (ipatool's loginRequest): an
-    /// XML plist with appleId, password (+2FA appended), guid, attempt, rmp,
-    /// why. The Content-Type stays form-urlencoded — that is what Apple's
-    /// servers expect despite the plist body.
-    static func authRequestBody(appleID: String, password: String, guid: String,
-                                twoFactor: Bool) throws -> Data {
-        try PropertyListSerialization.data(
-            fromPropertyList: [
-                "appleId": appleID,
-                // Original desktop flow (ipatool): attempt "4" for the first
-                // sign-in, "2" when a 2FA code is appended.
-                "attempt": twoFactor ? "2" : "4",
-                "createSession": "true",
-                "guid": guid,
-                "password": password,
-                "rmp": "0",
-                "why": "signIn",
-            ],
-            format: .xml,
-            options: 0
-        )
+    /// Form-urlencoded body matching the documented desktop-client flow:
+    /// appleId, password (+2FA appended), guid, attempt, rmp, why. This is
+    /// the shape that reached 2FA on-device (v0.3.11 logs).
+    static func authRequestBody(appleID: String, password: String, guid: String, attempt: Int) throws -> Data {
+        var components = URLComponents()
+        components.queryItems = [
+            URLQueryItem(name: "appleId", value: appleID),
+            URLQueryItem(name: "attempt", value: String(attempt)),
+            URLQueryItem(name: "guid", value: guid),
+            URLQueryItem(name: "password", value: password),
+            URLQueryItem(name: "rmp", value: "0"),
+            URLQueryItem(name: "why", value: "signIn"),
+        ]
+        return Data((components.percentEncodedQuery ?? "").utf8)
     }
 
     // MARK: - Session persistence (Keychain only)
