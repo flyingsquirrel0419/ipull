@@ -47,7 +47,8 @@ public actor EmulatedSAPSigner: SAPSigning {
         try await ensureEstablished()
         guard let runtime else { throw AppStoreError.unknown("SAP runtime not ready") }
         let signature = try runtime.sign(context: context, input: body)
-        return signature.map { String(format: "%02x", $0) }.joined()
+        // The header value is base64-encoded (per ipatool's http client).
+        return signature.base64EncodedString()
     }
 
     private func ensureEstablished() async throws {

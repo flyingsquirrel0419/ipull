@@ -4,7 +4,7 @@ import Foundation
 /// primitive are isolated here so transport and UI remain testable without
 /// it. See docs/risks.md R1.
 public protocol SAPSigning: Sendable {
-    /// Produce the X-Apple-ActionSignature header value for a request body.
+    /// Produce the X-Apple-ActionSignature header value (base64) for a body.
     func sign(body: Data) async throws -> String
 }
 

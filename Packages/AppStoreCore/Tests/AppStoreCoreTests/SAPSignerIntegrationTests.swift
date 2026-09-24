@@ -41,8 +41,8 @@ final class SAPSignerIntegrationTests: XCTestCase {
         let signature = try await signer.sign(body: body)
 
         XCTAssertFalse(signature.isEmpty, "signer must produce X-Apple-ActionSignature")
-        XCTAssertTrue(signature.allSatisfy(\.isHexDigit), "signature must be hex")
-        print("action signature (\(signature.count / 2) bytes): \(signature.prefix(32))…")
+        XCTAssertNotNil(Data(base64Encoded: signature), "signature must be base64")
+        print("action signature (\(Data(base64Encoded: signature)?.count ?? 0) bytes): \(signature.prefix(32))…")
 
         // A second call reuses the established session (no re-setup).
         let again = try await signer.sign(body: body)

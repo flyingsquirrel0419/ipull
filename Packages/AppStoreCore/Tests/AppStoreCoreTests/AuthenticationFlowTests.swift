@@ -80,7 +80,8 @@ final class AuthenticationFlowTests: XCTestCase {
         private(set) var signCalls = 0
         func sign(body: Data) async throws -> String {
             signCalls += 1
-            return "SAP-200:stub"
+            // Header value is base64 (matches the real signer's encoding).
+            return Data("stub".utf8).base64EncodedString()
         }
     }
 }

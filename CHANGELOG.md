@@ -2,6 +2,14 @@
 
 All notable, user-visible changes are listed here. Dates are ISO 8601.
 
+## [0.3.8] - 2026-09-24
+
+### Fixed
+
+- Send X-Apple-ActionSignature base64-encoded (as Apple's client expects)
+  instead of hex. authenticate no longer fails with HTTP 403 and an empty
+  body after the SAP session establishes.
+
 ## [0.3.7] - 2026-09-24
 
 ### Fixed
