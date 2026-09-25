@@ -17,6 +17,7 @@ public final class AppRouter: ObservableObject {
     public enum Route: Hashable {
         case appDetail(id: Int64)
         case purchased
+        case recents
     }
 
     @Published public var homePath: [Route] = []
@@ -25,6 +26,10 @@ public final class AppRouter: ObservableObject {
     /// The account sheet (sign-in, storage, diagnostics), opened from the
     /// profile button on every tab or from any "Sign In" prompt.
     @Published public var isAccountPresented = false
+    /// A search handed over from Home or the Share Extension. Held here
+    /// rather than broadcast, because the Search tab's view may not exist
+    /// yet when the request is made; it consumes this once it appears.
+    @Published public var pendingSearch: String?
 
     public enum Tab: Hashable {
         case home, search, library, downloads
@@ -61,13 +66,15 @@ public final class AppRouter: ObservableObject {
             selectedTab = .home
             homePath.append(.appDetail(id: id))
         case .bundleID, .searchTerm:
-            selectedTab = .search
-            NotificationCenter.default.post(name: .ipullSearchRequested, object: input)
+            search(input)
         }
         return request
     }
-}
 
-public extension Notification.Name {
-    static let ipullSearchRequested = Notification.Name("com.ipull.app.search-requested")
+    /// Switch to the Search tab and run `term` there verbatim.
+    public func search(_ term: String) {
+        searchPath = []
+        selectedTab = .search
+        pendingSearch = term.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
 }
