@@ -134,17 +134,18 @@ final class AuthenticationServiceTests: XCTestCase {
         let http = MockHTTP()
         http.responses = [
             HTTPResponse(statusCode: 200, headers: [:], data: plist(["failureType": "-5000"])),
+            HTTPResponse(statusCode: 200, headers: [:], data: plist(["failureType": "-5000"])),
         ]
         let service = makeService(http: http)
         do {
             _ = try await service.signIn(email: "u@e.com", password: "wrong", twoFactorCode: nil)
             XCTFail()
         } catch AppStoreError.authenticationFailed {
-            // expected: desktop attempt values leave no room for a
-            // client-side retry on -5000
+            // expected: ipatool resends -5000 once with attempt 2, then fails
         } catch {
             XCTFail("Wrong error: \(error)")
         }
+        XCTAssertEqual(http.requests.count, 2)
     }
 
     func testTwoFactorCodeMatchesIPatoolSubmitShape() async throws {
@@ -316,7 +317,7 @@ final class AuthenticationServiceTests: XCTestCase {
         XCTAssertEqual(String(data: stored, encoding: .utf8), "AABBCCDDEEFF")
     }
 
-    func testTwoFactorEmpty404ExhaustedMapsToInvalidTwoFactorCode() async throws {
+    func testTwoFactorEmpty404ExhaustedIsTransportFailure() async throws {
         let http = ScriptedHTTP()
         http.responses = (0..<3).map { _ in
             HTTPResponse(statusCode: 404, headers: [:], data: Data())
@@ -334,9 +335,10 @@ final class AuthenticationServiceTests: XCTestCase {
 
         do {
             _ = try await service.signIn(email: "u@e.com", password: "pw", twoFactorCode: "123456")
-            XCTFail("Expected invalidTwoFactorCode")
-        } catch AppStoreError.invalidTwoFactorCode {
-            // expected: challenge likely expired after 3 retries
+            XCTFail("Expected networkUnavailable")
+        } catch AppStoreError.networkUnavailable {
+            // expected: ipatool reports an empty 404 as a transport failure,
+            // never as a wrong code
         } catch {
             XCTFail("Wrong error: \(error)")
         }
@@ -427,15 +429,14 @@ final class AuthenticationServiceTests: XCTestCase {
 
         do {
             _ = try await service.signIn(email: "u@e.com", password: "pw", twoFactorCode: "123456")
-            XCTFail("Expected invalidTwoFactorCode")
-        } catch AppStoreError.invalidTwoFactorCode {
+            XCTFail("Expected networkUnavailable")
+        } catch AppStoreError.networkUnavailable {
             // expected
         }
 
         let next = try await service.signIn(email: "u@e.com", password: "pw", twoFactorCode: nil)
         XCTAssertEqual(next, .twoFactorRequired)
-        // A fresh signer was built for the restarted flow: the dead
-        // challenge's SAP session was discarded.
+        // One signer per invocation, as in ipatool's Login.
         XCTAssertEqual(factory.hardwareIDs.count, 2)
     }
 
@@ -597,12 +598,12 @@ final class AuthenticationServiceTests: XCTestCase {
         let result = try await service.signIn(email: "u@e.com", password: "pw", twoFactorCode: nil)
         guard case .success = result else { return XCTFail("Expected success after retries") }
 
-        // 10s floor, then max(20s, Retry-After 5s) = 20s; under the 30s cap.
-        XCTAssertEqual(sleeps.delaysNs, [10_000_000_000, 20_000_000_000])
+        // 10s fallback, then Retry-After 5s takes precedence (ipatool).
+        XCTAssertEqual(sleeps.delaysNs, [10_000_000_000, 5_000_000_000])
         XCTAssertEqual(http.requestCount, 3)
     }
 
-    func testRateLimitBackoffCappedAtMaxDelay() async throws {
+    func testRetryAfterOverBudgetAborts() async throws {
         let http = ScriptedHTTP()
         http.responses = [
             HTTPResponse(statusCode: 429, headers: ["Retry-After": "600"], data: Data()),
@@ -613,10 +614,15 @@ final class AuthenticationServiceTests: XCTestCase {
         let sleeps = Sleeps()
         let service = makeService(http: http, sleeps: sleeps)
 
-        _ = try await service.signIn(email: "u@e.com", password: "pw", twoFactorCode: nil)
-
-        // Retry-After of 600s must be clamped to the 30s ceiling.
-        XCTAssertEqual(sleeps.delaysNs, [30_000_000_000])
+        do {
+            _ = try await service.signIn(email: "u@e.com", password: "pw", twoFactorCode: nil)
+            XCTFail("Expected rateLimited")
+        } catch AppStoreError.rateLimited(let seconds) {
+            XCTAssertEqual(seconds, 600)
+        }
+        // ipatool ends the login instead of retrying before Apple's deadline.
+        XCTAssertEqual(sleeps.delaysNs, [])
+        XCTAssertEqual(http.requestCount, 1)
     }
 
     func testRateLimitRetriesExhaustedRethrows() async {
@@ -713,7 +719,7 @@ final class AuthenticationServiceTests: XCTestCase {
         XCTAssertNil(signedOutSession)
     }
 
-    // MARK: - GUID rotation on persistent empty 404
+    // MARK: - Stable identity on empty 404 (ipatool never rotates)
 
     /// Records the hardware IDs the signer factory was asked to build with.
     final class RecordingSignerFactory: @unchecked Sendable {
@@ -724,10 +730,8 @@ final class AuthenticationServiceTests: XCTestCase {
         }
     }
 
-    func testPersistentEmpty404RotatesGUIDAndRetries() async throws {
+    func testPasswordEmpty404RetriesOnSameGUID() async throws {
         let http = ScriptedHTTP()
-        // The first empty 404 (edge refusal) rotates immediately; the
-        // rotated identity's request succeeds.
         http.responses = [
             HTTPResponse(statusCode: 404, headers: [:], data: Data()),
             HTTPResponse(statusCode: 200,
@@ -746,28 +750,20 @@ final class AuthenticationServiceTests: XCTestCase {
         )
 
         let result = try await service.signIn(email: "u@e.com", password: "pw", twoFactorCode: nil)
-        guard case .success = result else { return XCTFail("Expected success after GUID rotation") }
+        guard case .success = result else { return XCTFail("Expected success after retry") }
         XCTAssertEqual(http.requestCount, 2)
-
-        // The factory was asked for two signers: one for the stored GUID,
-        // one for the rotated GUID.
-        XCTAssertEqual(factory.hardwareIDs.count, 2)
-        guard factory.hardwareIDs.count == 2 else { return }
-        XCTAssertEqual(factory.hardwareIDs[0], Data([0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF]))
-
-        // The rotated GUID was persisted and is a fresh, valid GUID.
+        XCTAssertEqual(factory.hardwareIDs, [Data([0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF])])
         let stored = try XCTUnwrap(secrets.load(key: DeviceIdentity.keychainKey))
-        let rotatedGUID = try XCTUnwrap(String(data: stored, encoding: .utf8))
-        XCTAssertNotEqual(rotatedGUID, "AABBCCDDEEFF")
-        XCTAssertTrue(DeviceIdentity.isValidGUID(rotatedGUID))
-        XCTAssertEqual(factory.hardwareIDs[1], DeviceIdentity.machineID(forGUID: rotatedGUID))
-        XCTAssertEqual(factory.hardwareIDs[1].count, 6)
+        XCTAssertEqual(String(data: stored, encoding: .utf8), "AABBCCDDEEFF")
+        // Both sends carry the same GUID in the body.
+        for body in http.bodies {
+            let dict = try XCTUnwrap(PropertyListSerialization.propertyList(from: body, format: nil) as? [String: Any])
+            XCTAssertEqual(dict["guid"] as? String, "AABBCCDDEEFF")
+        }
     }
 
-    func testPersistentEmpty404AfterRotationStillFails() async {
+    func testPersistentEmpty404FailsAfterThreeSends() async {
         let http = ScriptedHTTP()
-        // Rotation happens once per sign-in; continued 404s after the
-        // rotated identity also exhausts its retries must throw.
         http.responses = (0..<6).map { _ in
             HTTPResponse(statusCode: 404, headers: [:], data: Data())
         }
@@ -784,16 +780,13 @@ final class AuthenticationServiceTests: XCTestCase {
 
         do {
             _ = try await service.signIn(email: "u@e.com", password: "pw", twoFactorCode: nil)
-            XCTFail("Expected networkUnavailable after rotation also 404s")
+            XCTFail("Expected networkUnavailable")
         } catch AppStoreError.networkUnavailable {
             // expected
         } catch {
             XCTFail("Wrong error: \(error)")
         }
-
-        // One rotation: two signers total; one refused send, then the
-        // rotated identity's full 3-send budget.
-        XCTAssertEqual(factory.hardwareIDs.count, 2)
-        XCTAssertEqual(http.requestCount, 4)
+        XCTAssertEqual(factory.hardwareIDs.count, 1)
+        XCTAssertEqual(http.requestCount, 3)
     }
 }

@@ -42,19 +42,19 @@ public protocol AuthenticationServicing: Sendable {
     func restoreSession() async throws -> AppleAccountSession?
 }
 
-/// Clean-room Swift implementation of the documented App Store auth flow:
+/// Clean-room Swift implementation of ipatool's Login (majd/ipatool
+/// pkg/appstore/appstore_login.go):
 ///
-///   bag → POST authenticateAccount (XML plist body, SAP-signed, desktop
-///         attempt values: "4" + createSession "true" for password-only,
-///         ipatool's shape "1" with no createSession for the 2FA submit)
+///   bag → one SAP signer per invocation on the persistent GUID
+///       → POST authenticate (six-field XML plist, SAP-signed, attempt 1)
+///       → up to 4 logical iterations: -5000 on attempt 1 resends with
+///         attempt 2; a 302 resends, freshly signed, at the validated pod
+///         Location with attempt 1
+///       → each POST: at most 3 sends on empty/non-plist 204/404/429/5xx,
+///         10s/20s backoff, Retry-After takes precedence, >30s aborts
 ///       → on MZFinance.BadLogin → require 2FA code, retry with code appended
-///       → on 302 → follow pod redirect
-///       → on 429 → bounded exponential backoff honoring Retry-After,
-///         then rethrow .rateLimited
-///       → empty edge 404/204 on the password stage → rotate the device
-///         GUID once, resend with a fresh signer, then back off and rethrow;
-///         the 2FA submit keeps the challenge's GUID and only backs off
 ///       → success: dsPersonId + passwordToken + X-Set-Apple-Store-Front
+///       → signer closed when the invocation ends
 ///
 /// Passwords are never persisted; only the resulting session token goes to
 /// the Keychain (device-bound accessibility).
@@ -97,12 +97,8 @@ public final class AuthenticationService: AuthenticationServicing, @unchecked Se
         public static let testD = AuthExperiment(payloadMode: .legacyCreateSession, attemptMode: .attempt4)
     }
 
-    /// Bounds for 429 / empty-404 handling: ipatool's schedule (10s, 20s,
-    /// 30s) honoring a server Retry-After hint, capped at 30s. The old 1/2/4s
-    /// backoff hammered edge nodes inside Apple's 404 window and made a
-    /// flagged identity look persistent.
-    /// Reference semantics: at most 3 total sends per Login invocation
-    /// (initial + 2 retries), with 10s then 20s backoff.
+    /// ipatool's transport retry budget: at most 3 sends per POST (initial +
+    /// 2 retries) with 10s then 20s backoff; a Retry-After over 30s aborts.
     static let maxTransportSends = 3
     static let maxRateLimitRetries = 2
     static let retryBackoffSeconds: [UInt64] = [10, 20]
@@ -211,35 +207,34 @@ public final class AuthenticationService: AuthenticationServicing, @unchecked Se
             normalizedCode = nil
         }
 
-        var guid = try identityProvider(secrets)
-        // Reference-flow diagnostic: a 2FA submit is a fresh Login
-        // invocation upstream, which builds a NEW SAP signer on the same
-        // persistent machine identity (GUID/machineID unchanged, cookies
-        // preserved). Reusing the password-stage signer makes the edge
-        // answer the 2FA submit with an empty 404 on-device; whether a
-        // fresh signer changes that is exactly what this build measures.
-        if normalizedCode != nil {
-            progress?(.initializingSigner)
-            signerGeneration += 1
-            // Reference lifecycle: ipatool closes the password-stage SAP
-            // session (its setup exchange registered server-side state)
-            // before building the signer that signs the 2FA submit. Keep
-            // the same order here so only one registered SAP session for
-            // this machine identity is live when the 2FA request lands.
-            if let closing = signer as? SAPSessionClosing {
-                Log.info(.auth, "closing password-stage SAP session before 2FA signer setup")
-                await closing.closeSession()
-            }
-            Log.info(.auth, "preparing fresh SAP signer for 2FA (signerGeneration=\(signerGeneration), same guid/machineID)")
-            signer = try await signerFactory(DeviceIdentity.machineID(forGUID: guid))
-        } else {
-            if signer == nil {
-                progress?(.initializingSigner)
-                signer = try await signerFactory(DeviceIdentity.machineID(forGUID: guid))
-            }
-            // signerGeneration counts signers built AFTER the initial one,
-            // so the password stage logs 0 and a fresh 2FA signer logs 1.
+        let guid = try identityProvider(secrets)
+        // ipatool's Login builds one SAP signer per invocation on the
+        // persistent machine identity and closes it when the invocation
+        // ends, whatever the outcome. The 2FA submit is its own invocation.
+        progress?(.initializingSigner)
+        signerGeneration += 1
+        signer = try await signerFactory(DeviceIdentity.machineID(forGUID: guid))
+        let result: AuthenticationResult
+        do {
+            result = try await login(email: trimmedEmail, password: password,
+                                     normalizedCode: normalizedCode, guid: guid)
+        } catch {
+            await closeSigner()
+            throw error
         }
+        await closeSigner()
+        return result
+    }
+
+    private func closeSigner() async {
+        if let closing = signer as? SAPSessionClosing {
+            await closing.closeSession()
+        }
+        signer = nil
+    }
+
+    private func login(email trimmedEmail: String, password: String,
+                       normalizedCode: String?, guid: String) async throws -> AuthenticationResult {
         progress?(.fetchingConfiguration)
         Log.info(.auth, "sign-in start (guid resolved, \(Self.appVersionDescription))")
         let bag: Bag
@@ -254,39 +249,26 @@ public final class AuthenticationService: AuthenticationServicing, @unchecked Se
             throw error
         }
 
-        // Endpoint selection rule: the bag's auth endpoint is the default.
-        // Only an actual HTTP 302 Location from Apple may replace it —
-        // a Pod/itspod response header is routing metadata, never a host.
-        // A fresh password flow resets flow-local routing metadata so a
-        // stale pod ID from an earlier challenge cannot confuse diagnostics.
-        if normalizedCode == nil {
-            assignedPodID = nil
-            authenticationRedirectURL = nil
-        }
-        var endpoint = authenticationRedirectURL ?? bag.authEndpoint
+        // Each ipatool Login invocation starts at the bag endpoint. The
+        // cookie jar and GUID survive the 2FA prompt, but a previous pod
+        // redirect does not carry into a new authentication invocation.
+        assignedPodID = nil
+        authenticationRedirectURL = nil
+        var endpoint = bag.authEndpoint
         let stage = normalizedCode == nil ? "password" : "2fa"
         Log.info(.auth, "AUTH FLOW ID=\(Self.shortHash(of: guid)) stage=\(stage) identityGeneration=\(identityGeneration)")
         // Controlled experiment: payload schema and attempt value come from
         // the experiment configuration, identical across the password and
         // 2FA stages. They are never derived from the stage.
-        let attempt = experiment.attemptMode.rawValue
         let includeCreateSession = experiment.payloadMode == .legacyCreateSession
-        var rateLimitRetries = 0
-        var didRotateGUID = false
-
-        // One logical attempt per sign-in call. The 2FA experiment is a
-        // matrix across runs (payload mode x attempt mode), not random
-        // logical retries within a run. Transport retries below are capped
-        // at 3 total sends like the reference implementation.
-        let maxLogicalAttempts = 1
-        var logicalAttempt = 0
-        outer: while logicalAttempt < maxLogicalAttempts {
-            logicalAttempt += 1
-            var transportAttempt = 0
-            // Reference semantics: at most 3 total sends per Login
-            // invocation (initial + 2 retries).
-            for _ in 0..<Self.maxTransportSends {
-                transportAttempt += 1
+        // The default follows ipatool: a backend -5000 on attempt 1
+        // escalates to attempt 2; a 302 is a separate logical iteration.
+        logical: for logicalAttempt in 1...4 {
+            let attempt = authenticationRedirectURL == nil
+                ? (experiment.attemptMode == .attempt1 ? logicalAttempt : experiment.attemptMode.rawValue)
+                : 1
+            var rateLimitRetries = 0
+            for transportAttempt in 1...Self.maxTransportSends {
             let passwordField = password + (normalizedCode ?? "")
             let body = try Self.authRequestBody(
                 appleID: trimmedEmail,
@@ -426,48 +408,22 @@ public final class AuthenticationService: AuthenticationServicing, @unchecked Se
                 throw error
             }
 
-            // Transient statuses (204/404/429/5xx) are never a credential
-            // verdict — Apple answers them while an identity or challenge
-            // state propagates across edge nodes. ipatool retries exactly
-            // this set with 10/20/30s backoff and keeps the same GUID.
-            // A non-empty body on a 404/5xx still carries a plist verdict,
-            // which is parsed below; only bodyless transient responses and
-            // 204/429 retry here.
-            let isTransient = response.statusCode == 204
-                || response.statusCode == 429
-                || (response.statusCode == 404 && response.data.isEmpty)
-                || (response.statusCode >= 500 && response.statusCode < 600 && response.data.isEmpty)
-            // Edge refusal: an empty 404/204 on the password stage. A used
-            // GUID is refused while a fresh one reaches MZFinance, so rotate
-            // right away instead of backing off on a GUID that stays refused.
-            // The 2FA submit keeps the challenge's GUID (ipatool parity):
-            // v0.3.40 showed a rotated identity is refused there as well.
-            let isEdgeRefusal = (response.statusCode == 404 || response.statusCode == 204)
-                && response.data.isEmpty
-            if isEdgeRefusal && !didRotateGUID && normalizedCode == nil {
-                didRotateGUID = true
-                identityGeneration += 1
-                Log.info(.auth, "edge refused guid (HTTP \(response.statusCode), stage=\(stage)); rotating identity and resending (identityGeneration=\(identityGeneration))")
-                if let closing = signer as? SAPSessionClosing {
-                    await closing.closeSession()
-                }
-                let freshGUID = try DeviceIdentity.rotateGUID(secretStore: secrets)
-                guid = freshGUID
-                progress?(.initializingSigner)
-                signer = try await signerFactory(DeviceIdentity.machineID(forGUID: freshGUID))
-                rateLimitRetries = 0
-                logicalAttempt = 0
-                continue outer
-            }
+            // ipatool retries transport errors for an empty or non-plist
+            // 204/404/429/5xx. A parseable plist is an application verdict.
+            let hasPlist = (try? PropertyListSerialization.propertyList(from: response.data, format: nil)) != nil
+            let isTransient = !hasPlist && (response.statusCode == 204
+                || response.statusCode == 404 || response.statusCode == 429
+                || (500...599).contains(response.statusCode))
             if isTransient {
-                let stage = normalizedCode == nil ? "password" : "2fa"
-                if rateLimitRetries < Self.maxRateLimitRetries {
-                    let retryAfter = response.header("Retry-After").flatMap { Int($0) }
-                    let backoff = Self.retryBackoffSeconds[min(rateLimitRetries, Self.retryBackoffSeconds.count - 1)]
-                    let delay = min(
-                        max(UInt64(max(retryAfter ?? 0, 0)), backoff),
-                        Self.rateLimitMaxDelaySeconds
-                    )
+                if transportAttempt < Self.maxTransportSends {
+                    let backoff = Self.retryBackoffSeconds[transportAttempt - 1]
+                    let requested = Self.retryAfterSeconds(response.header("Retry-After"))
+                    if let requested, requested > Self.rateLimitMaxDelaySeconds {
+                        throw response.statusCode == 429
+                            ? AppStoreError.rateLimited(retryAfterSeconds: response.header("Retry-After").flatMap { Int($0) } ?? Int(requested))
+                            : AppStoreError.networkUnavailable
+                    }
+                    let delay = requested.map { max($0, 1) } ?? backoff
                     rateLimitRetries += 1
                     Log.info(.auth, "authenticate transient HTTP \(response.statusCode) (stage=\(stage)); retry \(rateLimitRetries) after \(delay)s")
                     progress?(.retryingAfterRateLimit(seconds: delay))
@@ -475,47 +431,19 @@ public final class AuthenticationService: AuthenticationServicing, @unchecked Se
                     continue
                 }
                 Log.error(.auth, "authenticate still HTTP \(response.statusCode) after \(rateLimitRetries) retries (stage=\(stage))")
-                if normalizedCode != nil {
-                    // The 2FA submit never rotates (the challenge belongs to
-                    // this GUID); a persistent transient most likely means
-                    // the code expired during the retry window, so ask for
-                    // a fresh one.
-                    logFailureDiagnostic(
-                        stage: "2fa", lastStatus: response.statusCode, host: endpoint.host ?? "?",
-                        guid: guid, retries: rateLimitRetries, rotations: didRotateGUID ? 1 : 0,
-                        cause: "transient edge 404/204/5xx persisted through the retry budget on a 2FA submit; challenge discarded, next attempt starts a fresh password flow")
-                    invalidateTwoFactorChallenge()
-                    throw AppStoreError.invalidTwoFactorCode
-                }
                 if response.statusCode == 429 {
                     throw AppStoreError.rateLimited(retryAfterSeconds: response.header("Retry-After").flatMap { Int($0) })
-                }
-                // Persistent empty 404/204/5xx on the password step: Apple
-                // has flagged this device identity server-side. Rotate the
-                // GUID once per sign-in — a fresh GUID in both the SAP
-                // signer (hardware ID) and the request body is the only
-                // app-side recovery lever. Rotation is not re-armed, so a
-                // flagged account terminates after the rotated sequence.
-                if !didRotateGUID {
-                    didRotateGUID = true
-                    identityGeneration += 1
-                    Log.info(.auth, "guid rotated; retrying with fresh identity (identityGeneration=\(identityGeneration))")
-                    let freshGUID = try DeviceIdentity.rotateGUID(secretStore: secrets)
-                    guid = freshGUID
-                    signer = try await signerFactory(DeviceIdentity.machineID(forGUID: freshGUID))
-                    rateLimitRetries = 0
-                    // Rotation replaces the identity and re-runs the
-                    // password stage on the fresh identity; it does not
-                    // consume the logical attempt budget.
-                    logicalAttempt = 0
-                    continue outer
                 }
                 throw AppStoreError.networkUnavailable
             }
 
-            if response.statusCode == 302,
-               let location = response.header("Location"),
-               let redirectURL = URL(string: location) {
+            if response.statusCode == 302 {
+                // ipatool repeats the POST, freshly signed, at the pod
+                // Location as its next logical iteration with attempt 1.
+                guard let location = response.header("Location")?.trimmingCharacters(in: .whitespaces),
+                      !location.isEmpty, let redirectURL = URL(string: location) else {
+                    throw AppStoreError.unknown("Authentication redirect is missing Location")
+                }
                 try BagService.validate(authEndpoint: redirectURL)
                 Log.info(.auth,
                     "[auth][redirect] status=302 fromHost=\(endpoint.host ?? "?") toHost=\(redirectURL.host ?? "?") pod=\(response.header("pod") ?? "nil")")
@@ -523,7 +451,7 @@ public final class AuthenticationService: AuthenticationServicing, @unchecked Se
                 // pod URL from the numeric pod identifier.
                 authenticationRedirectURL = redirectURL
                 endpoint = redirectURL
-                continue
+                continue logical
             }
 
             guard let plist = try? PropertyListSerialization.propertyList(from: response.data, format: nil) as? [String: Any] else {
@@ -581,7 +509,7 @@ public final class AuthenticationService: AuthenticationServicing, @unchecked Se
                 }
                 logFailureDiagnostic(
                     stage: "2fa", lastStatus: response.statusCode, host: endpoint.host ?? "?",
-                    guid: guid, retries: rateLimitRetries, rotations: didRotateGUID ? 1 : 0,
+                    guid: guid, retries: rateLimitRetries, rotations: 0,
                     cause: "challenge answered BadLogin on 2FA submit; discarded, fresh challenge required")
                 invalidateTwoFactorChallenge()
                 throw AppStoreError.invalidTwoFactorCode
@@ -592,6 +520,12 @@ public final class AuthenticationService: AuthenticationServicing, @unchecked Se
             }
 
             if failureType == "-5000" {
+                // ipatool resends once with attempt 2 when the first
+                // iteration is answered with invalid credentials.
+                if logicalAttempt == 1 {
+                    Log.info(.auth, "invalid credentials on attempt 1; retrying with attempt 2")
+                    continue logical
+                }
                 throw AppStoreError.authenticationFailed
             }
 
@@ -601,7 +535,7 @@ public final class AuthenticationService: AuthenticationServicing, @unchecked Se
             if failureType == "5020", normalizedCode != nil {
                 logFailureDiagnostic(
                     stage: "2fa", lastStatus: response.statusCode, host: endpoint.host ?? "?",
-                    guid: guid, retries: rateLimitRetries, rotations: didRotateGUID ? 1 : 0,
+                    guid: guid, retries: rateLimitRetries, rotations: 0,
                     cause: "failureType 5020: Apple could not verify password+code as a unit (wrong or expired code)")
                 invalidateTwoFactorChallenge()
                 throw AppStoreError.invalidTwoFactorCode
@@ -627,6 +561,26 @@ public final class AuthenticationService: AuthenticationServicing, @unchecked Se
     static func normalizeTwoFactorCode(_ raw: String) -> String? {
         let digits = raw.filter { $0 >= "0" && $0 <= "9" }
         return digits.count == 6 ? digits : nil
+    }
+
+    /// ipatool's Retry-After: delta seconds or an HTTP date. Values over
+    /// the 30s budget saturate to 31 so the caller aborts instead of waiting.
+    static func retryAfterSeconds(_ value: String?, now: Date = Date()) -> UInt64? {
+        guard let value = value?.trimmingCharacters(in: .whitespaces), !value.isEmpty else { return nil }
+        if let seconds = UInt64(value) {
+            return min(seconds, rateLimitMaxDelaySeconds + 1)
+        }
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(identifier: "GMT")
+        for format in ["EEE, dd MMM yyyy HH:mm:ss zzz", "EEEE, dd-MMM-yy HH:mm:ss zzz", "EEE MMM d HH:mm:ss yyyy"] {
+            formatter.dateFormat = format
+            if let date = formatter.date(from: value) {
+                let delta = date.timeIntervalSince(now)
+                return delta <= 0 ? 0 : min(UInt64(delta.rounded(.up)), rateLimitMaxDelaySeconds + 1)
+            }
+        }
+        return nil
     }
 
     /// Truncated SHA-256 of an identifier for log correlation. Never log
@@ -747,17 +701,10 @@ public final class AuthenticationService: AuthenticationServicing, @unchecked Se
         Log.info(.auth, "two-factor challenge discarded; next sign-in starts a fresh password flow")
     }
 
-    /// XML plist body matching the desktop client (ipatool's XMLPayload),
-    /// serialized with Swift's PropertyListSerialization — the same encoder
-    /// Apple's own Configurator uses. Content-Type stays form-urlencoded.
-    ///
-    /// Two shapes, matching ipatool's loginRequest exactly:
-    ///   - password-only sign-in: attempt "4" with createSession "true"
-    ///     (the desktop Configurator values that Apple answers reliably);
-    ///   - two-factor verification: attempt "1" and no createSession field
-    ///     at all. ipatool's 2FA submit is exactly this six-field body, and
-    ///     Apple answers attempt=2 + createSession=true 2FA retries with an
-    ///     empty 404 on-device.
+    /// XML plist body matching ipatool's loginRequest: the six fields
+    /// appleId, attempt, guid, password (+ code), rmp "0", why "signIn",
+    /// with Content-Type form-urlencoded. ipatool never sends createSession;
+    /// that field exists only for the non-default legacy experiment.
     static func authRequestBody(appleID: String, password: String, guid: String, attempt: Int, includeCreateSession: Bool) throws -> Data {
         var body: [String: String] = [
             "appleId": appleID,

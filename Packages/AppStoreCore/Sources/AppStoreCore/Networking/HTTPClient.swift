@@ -65,24 +65,19 @@ public protocol StreamingHTTPClient: HTTPClient {
 }
 
 public final class URLSessionHTTPClient: HTTPClient, @unchecked Sendable {
-    /// Dedicated session so authenticate's Set-Cookie (mzf_in, itspod)
-    /// survives across sign-in attempts. URLSession.shared is not used
-    /// because its cookie storage is global and could mix cookies from
-    /// unrelated Apple endpoints.
+    /// The cookie jar survives independent authentication transports and
+    /// other App Store operations; authentication connections do not.
+    private let cookieStorage = HTTPCookieStorage.shared
     private let session: URLSession
 
-    public init() {
-        let configuration = URLSessionConfiguration.ephemeral
+    public convenience init() {
+        self.init(configuration: .ephemeral)
+    }
+
+    init(configuration: URLSessionConfiguration) {
         configuration.httpCookieAcceptPolicy = .always
         configuration.httpShouldSetCookies = true
-        configuration.httpCookieStorage = HTTPCookieStorage.shared
-        // ipatool's authentication client sets DisableKeepAlives: every
-        // authenticate POST gets a fresh TCP connection. A reused pooled
-        // connection for the 2FA verification is answered with an empty
-        // 404 by Apple's edge (observed on-device with cookies, signer and
-        // GUID all preserved). URLSession has no keep-alive toggle, so
-        // each request explicitly asks the server to close the connection,
-        // which keeps every authenticate POST on a fresh edge connection.
+        configuration.httpCookieStorage = cookieStorage
         session = URLSession(configuration: configuration)
     }
 
@@ -95,32 +90,25 @@ public final class URLSessionHTTPClient: HTTPClient, @unchecked Sendable {
             "Configurator/2.17 (Macintosh; OS X 15.2; 24C5089c) AppleWebKit/0620.1.16.11.6",
             forHTTPHeaderField: "User-Agent")
         request.headers["User-Agent"] = "Configurator/2.17 (Macintosh; OS X 15.2; 24C5089c) AppleWebKit/0620.1.16.11.6"
-        // Explicit Accept and Content-Type on EVERY auth request, password
-        // and 2FA alike — the reference client sends both, and a missing
-        // Accept header is a known edge-filter trigger on some Apple
-        // endpoints.
-        urlRequest.setValue("*/*", forHTTPHeaderField: "Accept")
-        request.headers["Accept"] = "*/*"
-        if urlRequest.value(forHTTPHeaderField: "Content-Type") == nil, body != nil {
-            urlRequest.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
-            request.headers["Content-Type"] = "application/x-www-form-urlencoded"
-        }
-        urlRequest.setValue("close", forHTTPHeaderField: "Connection")
         for (key, value) in request.headers {
             urlRequest.setValue(value, forHTTPHeaderField: key)
         }
         urlRequest.httpBody = body
 
+        // Go's authentication transport does not pool connections and stops
+        // at a 302, allowing the caller to sign a new POST for the Store pod.
+        // A new URLSession avoids our own h2 pool; CFNetwork may still coalesce
+        // connections, so only task metrics can establish actual reuse.
+        let isAuth = request.method == "POST" && request.url.path == BagService.authPath
+        let authDelegate = isAuth ? AuthRequestDelegate() : nil
+        let authSession: URLSession? = isAuth ? URLSession(configuration: session.configuration,
+                                                          delegate: authDelegate, delegateQueue: nil) : nil
+        defer { authSession?.finishTasksAndInvalidate() }
+
         do {
+            let (data, response) = try await (authSession ?? session).data(for: urlRequest)
             #if canImport(Darwin)
-            // Auth requests record what CFNetwork actually put on the wire
-            // (negotiated protocol, final header names) — the one layer a
-            // desktop reproduction of the flow cannot exercise.
-            let metrics = request.url.path.hasSuffix("/authenticate") ? WireMetricsDelegate() : nil
-            let (data, response) = try await session.data(for: urlRequest, delegate: metrics)
-            metrics?.log()
-            #else
-            let (data, response) = try await session.data(for: urlRequest)
+            authDelegate?.log()
             #endif
             guard let http = response as? HTTPURLResponse else {
                 throw AppStoreError.unknown("Non-HTTP response")
@@ -153,25 +141,33 @@ public final class URLSessionHTTPClient: HTTPClient, @unchecked Sendable {
 }
 
 #if canImport(FoundationNetworking) || canImport(Darwin)
-#if canImport(Darwin)
-private final class WireMetricsDelegate: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+private final class AuthRequestDelegate: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+    func urlSession(_ session: URLSession, task: URLSessionTask,
+                    willPerformHTTPRedirection response: HTTPURLResponse,
+                    newRequest request: URLRequest,
+                    completionHandler: @escaping (URLRequest?) -> Void) {
+        completionHandler(nil)
+    }
+
+    #if canImport(Darwin)
     private var summary = "no metrics"
 
     func urlSession(_ session: URLSession, task: URLSessionTask, didFinishCollecting metrics: URLSessionTaskMetrics) {
         let transaction = metrics.transactionMetrics.last
+        // currentRequest lists CFNetwork's request headers, not captured wire bytes.
         let headerNames = task.currentRequest?.allHTTPHeaderFields?.keys.sorted().joined(separator: ",") ?? "?"
         summary = "protocol=\(transaction?.networkProtocolName ?? "?") "
             + "reusedConnection=\(transaction?.isReusedConnection ?? false) "
             + "proxy=\(transaction?.isProxyConnection ?? false) "
             + "tls=\(transaction?.negotiatedTLSProtocolVersion.map { String($0.rawValue, radix: 16) } ?? "?") "
-            + "sentHeaderNames=[\(headerNames)]"
+            + "requestHeaderNames=[\(headerNames)]"
     }
 
     func log() {
         Log.info(.auth, "[auth][wire] \(summary)")
     }
+    #endif
 }
-#endif
 
 extension URLSessionHTTPClient: StreamingHTTPClient {
     public func download(_ request: HTTPRequest, to destination: URL,

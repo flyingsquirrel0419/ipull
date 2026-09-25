@@ -110,13 +110,19 @@ public actor BagService: BagProviding {
         )
     }
 
-    /// Auth endpoint must be https and on an Apple buy host.
+    static let authPath = "/WebObjects/MZFinance.woa/wa/authenticate"
+
+    /// Auth endpoint must be https, on an Apple buy host, at the exact
+    /// authenticate path (ipatool's validateAuthenticationEndpoint).
     nonisolated static func validate(authEndpoint url: URL) throws {
         guard url.scheme == "https", let host = url.host?.lowercased() else {
             throw AppStoreError.unknown("Invalid authentication endpoint in bag")
         }
         guard host == "buy.itunes.apple.com" || host.hasSuffix("-buy.itunes.apple.com") else {
             throw AppStoreError.unknown("Unexpected authentication endpoint host")
+        }
+        guard url.path == authPath else {
+            throw AppStoreError.unknown("Unexpected authentication endpoint path")
         }
     }
 }
