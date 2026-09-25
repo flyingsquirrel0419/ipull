@@ -56,13 +56,15 @@ public final class DownloadManager: NSObject, ObservableObject {
     // MARK: - Queue
 
     @discardableResult
-    public func enqueue(app: AppStoreApp, version: AppStoreVersion, cdnURL: URL) -> DownloadRecord {
+    public func enqueue(app: AppStoreApp, version: AppStoreVersion, cdnURL: URL,
+                        destinationBookmark: Data? = nil) -> DownloadRecord {
         let record = DownloadRecord(
             appID: app.id, appName: app.name, bundleID: app.bundleID,
             version: version.displayVersion ?? version.externalVersionID,
             externalVersionID: version.externalVersionID, state: .queued,
             totalBytes: app.fileSizeBytes ?? 0,
-            iconURL: app.iconURL
+            iconURL: app.iconURL,
+            destinationBookmark: destinationBookmark
         )
         pendingURLs[record.id] = cdnURL
         records.append(record)
@@ -197,11 +199,32 @@ extension DownloadManager: URLSessionDownloadDelegate {
                 }
                 try FileManager.default.moveItem(at: staged, to: destination)
                 Log.info(.download, "download completed (\(record.totalBytes) bytes)")
-                self.update(id) { $0.state = .completed }
+
+                // Write to the folder the user picked. Without a Library copy
+                // the file is moved there; if that fails it stays in Library.
+                var keepInLibrary = true
+                var savedFolder: String?
+                if let bookmark = record.destinationBookmark {
+                    let move = !SaveLocation.keepLibraryCopy
+                    do {
+                        let written = try SaveLocation.export(destination, to: bookmark, move: move)
+                        savedFolder = written.deletingLastPathComponent().lastPathComponent
+                        keepInLibrary = !move
+                        Log.info(.download, "IPA written to the chosen folder (moved=\(move))")
+                    } catch {
+                        Log.error(.download, "writing to the chosen folder failed: \(String(describing: type(of: error))); kept in Library")
+                    }
+                }
+                self.update(id) {
+                    $0.state = .completed
+                    $0.savedFolderName = savedFolder
+                }
                 self.tasks.removeValue(forKey: id)
                 self.pendingURLs.removeValue(forKey: id)
                 self.progress.removeValue(forKey: id)
-                await self.onCompleted(record, destination)
+                if keepInLibrary {
+                    await self.onCompleted(record, destination)
+                }
                 self.startNextIfPossible()
             } catch {
                 Log.error(.download, "moving IPA into the library failed: \(String(describing: type(of: error)))")

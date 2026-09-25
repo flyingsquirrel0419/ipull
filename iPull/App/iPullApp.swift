@@ -36,7 +36,7 @@ struct iPullApp: App {
 
     var body: some Scene {
         WindowGroup {
-            RootTabView()
+            RootTabView(downloads: environment.downloadManager)
                 .environmentObject(environment)
                 .environmentObject(router)
                 .modelContainer(environment.modelContainer)

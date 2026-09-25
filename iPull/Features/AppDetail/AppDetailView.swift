@@ -1,5 +1,6 @@
 import SwiftUI
 import SwiftData
+import UniformTypeIdentifiers
 import AppStoreCore
 
 struct AppDetailView: View {
@@ -10,6 +11,8 @@ struct AppDetailView: View {
     @Environment(\.modelContext) private var modelContext
     @StateObject private var viewModel = AppDetailViewModel()
     @State private var showAllVersions = false
+    @State private var choosingFolder = false
+    @State private var iconFrame: CGRect = .zero
 
     var body: some View {
         Group {
@@ -33,6 +36,12 @@ struct AppDetailView: View {
         .navigationBarTitleDisplayMode(.inline)
         .sheet(isPresented: $showAllVersions) {
             VersionsView(viewModel: viewModel)
+        }
+        // No save folder in Settings: ask where this download should go.
+        .fileImporter(isPresented: $choosingFolder, allowedContentTypes: [.folder]) { result in
+            guard case .success(let folder) = result else { return }
+            let bookmark = try? SaveLocation.bookmark(for: folder)
+            startDownload(to: bookmark)
         }
         // Re-run when the account changes so signing in from the account
         // sheet immediately unlocks versions and downloads here.
@@ -90,6 +99,11 @@ struct AppDetailView: View {
     private func header(_ app: AppStoreApp) -> some View {
         HStack(alignment: .top, spacing: 16) {
             AppIconView(url: app.iconURL, name: app.name, size: 118)
+                .background(GeometryReader { geo in
+                    Color.clear
+                        .onAppear { iconFrame = geo.frame(in: .global) }
+                        .onChange(of: geo.frame(in: .global)) { _, frame in iconFrame = frame }
+                })
             VStack(alignment: .leading, spacing: 4) {
                 Text(app.name)
                     .font(.title2.weight(.bold))
@@ -109,16 +123,34 @@ struct AppDetailView: View {
         if environment.session == nil {
             Button("Sign In") { router.isAccountPresented = true }
                 .buttonStyle(.pillProminent)
+        } else if let app = viewModel.app {
+            DetailDownloadButton(
+                manager: environment.downloadManager,
+                appID: app.id,
+                isResolving: viewModel.isResolving,
+                isEnabled: viewModel.canDownload,
+                start: requestDownload,
+                openDownloads: { router.selectedTab = .downloads }
+            )
+        }
+    }
+
+    /// Use the folder from Settings, or ask for one for this download.
+    private func requestDownload() {
+        if let bookmark = SaveLocation.defaultBookmark {
+            startDownload(to: bookmark)
         } else {
-            Button {
-                Task { await viewModel.download(environment: environment) }
-            } label: {
-                Label("Download", systemImage: "icloud.and.arrow.down")
-                    .labelStyle(.titleOnly)
+            choosingFolder = true
+        }
+    }
+
+    private func startDownload(to bookmark: Data?) {
+        Task {
+            guard await viewModel.download(environment: environment, destinationBookmark: bookmark),
+                  let app = viewModel.app else { return }
+            if iconFrame != .zero {
+                router.flight = IconFlight(iconURL: app.iconURL, name: app.name, from: iconFrame)
             }
-            .buttonStyle(.pillProminent)
-            .disabled(!viewModel.canDownload)
-            .accessibilityHint(viewModel.selectedVersion.map { "Downloads version \($0.displayVersion ?? $0.externalVersionID)" } ?? "")
         }
     }
 

@@ -21,6 +21,8 @@ final class AppDetailViewModel: ObservableObject {
     @Published private(set) var selectedVersion: AppStoreVersion?
     @Published private(set) var downloadStatus: String?
     @Published private(set) var canDownload = false
+    /// True while the download URL is being resolved with Apple.
+    @Published private(set) var isResolving = false
 
     func load(appID: Int64, environment: AppEnvironment) async {
         // Keep the loaded page on screen when re-running after sign-in.
@@ -103,18 +105,29 @@ final class AppDetailViewModel: ObservableObject {
         canDownload = true
     }
 
-    func download(environment: AppEnvironment) async {
+    /// Resolve and queue the selected version. Returns true once queued,
+    /// which is the moment the UI plays the fly-to-Downloads animation.
+    @discardableResult
+    func download(environment: AppEnvironment, destinationBookmark: Data?) async -> Bool {
         guard let app, let session = environment.session else {
             downloadStatus = AppStoreError.authenticationRequired.userMessage
-            return
+            return false
         }
-        guard let version = selectedVersion else { return }
+        guard let version = selectedVersion else { return false }
+        isResolving = true
+        defer { isResolving = false }
 
         // Duplicate detection
         if let existing = environment.storage.existingFile(appID: app.id, version: version.displayVersion ?? version.externalVersionID) {
-            downloadStatus = "Already downloaded — see Library."
-            _ = existing
-            return
+            // Already in Library: write that copy to the chosen folder instead
+            // of downloading the same IPA again.
+            if let destinationBookmark,
+               let written = try? SaveLocation.export(existing, to: destinationBookmark, move: false) {
+                downloadStatus = "Saved to \(written.deletingLastPathComponent().lastPathComponent)."
+            } else {
+                downloadStatus = "Already downloaded — see Library."
+            }
+            return false
         }
 
         // Disk space check
@@ -122,10 +135,10 @@ final class AppDetailViewModel: ObservableObject {
            let free = environment.storage.freeDiskBytes(),
            free < expected {
             downloadStatus = AppStoreError.storageFull.userMessage
-            return
+            return false
         }
 
-        downloadStatus = "Resolving download…"
+        downloadStatus = nil
         do {
             let metadata = try await environment.client.downloadMetadata.downloadMetadata(
                 app: app, session: session,
@@ -138,15 +151,18 @@ final class AppDetailViewModel: ObservableObject {
                 isLatest: version.isLatest
             )
             Log.info(.download, "download URL resolved; queueing")
-            environment.downloadManager.enqueue(app: app, version: resolvedVersion, cdnURL: metadata.url)
-            downloadStatus = "Queued. See the Downloads tab."
+            environment.downloadManager.enqueue(app: app, version: resolvedVersion, cdnURL: metadata.url,
+                                                destinationBookmark: destinationBookmark)
+            return true
         } catch let error as AppStoreError {
             Log.error(.download, "download URL resolution failed: \(error)")
             downloadStatus = error.userMessage
             environment.handleServiceError(error)
+            return false
         } catch {
             Log.error(.download, "download URL resolution failed: \(String(describing: type(of: error)))")
             downloadStatus = AppStoreError.downloadFailed("resolve").userMessage
+            return false
         }
     }
 }

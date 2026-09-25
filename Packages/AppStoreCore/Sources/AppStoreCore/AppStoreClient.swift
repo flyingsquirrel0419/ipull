@@ -7,22 +7,19 @@ public final class AppStoreClient: Sendable {
     public let versions: any VersionServicing
     public let purchase: any PurchaseServicing
     public let downloadMetadata: any DownloadMetadataServicing
-    public let ownedApps: any OwnedAppsServicing
 
     public init(
         auth: any AuthenticationServicing,
         search: any SearchServicing,
         versions: any VersionServicing,
         purchase: any PurchaseServicing,
-        downloadMetadata: any DownloadMetadataServicing,
-        ownedApps: any OwnedAppsServicing
+        downloadMetadata: any DownloadMetadataServicing
     ) {
         self.auth = auth
         self.search = search
         self.versions = versions
         self.purchase = purchase
         self.downloadMetadata = downloadMetadata
-        self.ownedApps = ownedApps
     }
 
     /// Live wiring for the iOS app.
@@ -33,8 +30,6 @@ public final class AppStoreClient: Sendable {
         let guidProvider: @Sendable () throws -> String = {
             try DeviceIdentity.currentGUID(secretStore: secrets)
         }
-        let hardwareID = (try? DeviceIdentity.currentGUID(secretStore: secrets))
-            .map { DeviceIdentity.machineID(forGUID: $0) } ?? Data()
         let assets = SAPAssets(http: http) { assetProgress in
             switch assetProgress {
             case .downloading(let completed, let total):
@@ -50,15 +45,12 @@ public final class AppStoreClient: Sendable {
             EmulatedSAPSigner(http: http, bagProvider: bag,
                               assetProvider: assets, hardwareID: id, progress: progress)
         }
-        let signer = EmulatedSAPSigner(http: http, bagProvider: bag,
-                                       assetProvider: assets, hardwareID: hardwareID, progress: progress)
         return AppStoreClient(
             auth: AuthenticationService(http: http, bagProvider: bag, signerFactory: signerFactory, secrets: secrets, progress: progress),
             search: SearchService(http: http),
             versions: VersionService(http: http, bagProvider: bag, guidProvider: guidProvider),
             purchase: PurchaseService(http: http, bagProvider: bag, guidProvider: guidProvider),
-            downloadMetadata: DownloadMetadataService(http: http, bagProvider: bag, guidProvider: guidProvider),
-            ownedApps: OwnedAppsService(http: http, signer: signer, guidProvider: guidProvider)
+            downloadMetadata: DownloadMetadataService(http: http, bagProvider: bag, guidProvider: guidProvider)
         )
     }
 }

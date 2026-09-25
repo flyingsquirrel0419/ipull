@@ -4,7 +4,7 @@ import SwiftUI
 
 /// App icon with the continuous "squircle" mask and hairline border Apple
 /// draws around icons, falling back to a monogram tile when no artwork URL
-/// is known (library items, purchased apps).
+/// is known (library items, downloads).
 struct AppIconView: View {
     let url: URL?
     var name: String = ""
