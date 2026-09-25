@@ -87,12 +87,24 @@ public final class URLSessionHTTPClient: HTTPClient, @unchecked Sendable {
     }
 
     public func send(_ request: HTTPRequest, body: Data?) async throws -> HTTPResponse {
+        var request = request
         #if canImport(FoundationNetworking) || canImport(Darwin)
         var urlRequest = URLRequest(url: request.url)
         urlRequest.httpMethod = request.method
         urlRequest.setValue(
             "Configurator/2.17 (Macintosh; OS X 15.2; 24C5089c) AppleWebKit/0620.1.16.11.6",
             forHTTPHeaderField: "User-Agent")
+        request.headers["User-Agent"] = "Configurator/2.17 (Macintosh; OS X 15.2; 24C5089c) AppleWebKit/0620.1.16.11.6"
+        // Explicit Accept and Content-Type on EVERY auth request, password
+        // and 2FA alike — the reference client sends both, and a missing
+        // Accept header is a known edge-filter trigger on some Apple
+        // endpoints.
+        urlRequest.setValue("*/*", forHTTPHeaderField: "Accept")
+        request.headers["Accept"] = "*/*"
+        if urlRequest.value(forHTTPHeaderField: "Content-Type") == nil, body != nil {
+            urlRequest.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
+            request.headers["Content-Type"] = "application/x-www-form-urlencoded"
+        }
         urlRequest.setValue("close", forHTTPHeaderField: "Connection")
         for (key, value) in request.headers {
             urlRequest.setValue(value, forHTTPHeaderField: key)

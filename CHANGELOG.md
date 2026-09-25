@@ -2,6 +2,25 @@
 
 All notable, user-visible changes are listed here. Dates are ISO 8601.
 
+## [0.3.32] - 2026-09-25
+
+### Changed
+
+- Auth requests now carry explicit Accept "*/*" and Content-Type on both
+  the password and 2FA stages, plus the single constant Configurator
+  User-Agent for the whole flow — the exact stable header profile the
+  reference client sends.
+- The verdict log splits fingerprint matching into passwordVs2FAMatched
+  (the two stages of this flow share method, content type, header names,
+  UA, and endpoint) and configuratorProfileMatched (POST + Accept */* +
+  form content type + UA + ActionSignature + Apple buy-host endpoint).
+- signerGeneration now reads 0 for the password stage and 1 for a fresh
+  2FA signer, and signerFresh reflects that directly.
+- Response classification tightened: 204, a 404 without
+  Apple-Originating-System or a request UUID, and a 301 without Location
+  are EDGE; only plist/XML bodies, AOS, or request-UUID evidence marks
+  MZFINANCE. responseBodyLength is logged with every response.
+
 ## [0.3.31] - 2026-09-25
 
 ### Changed

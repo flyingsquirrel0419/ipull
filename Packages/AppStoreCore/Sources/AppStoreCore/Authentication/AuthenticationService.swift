@@ -137,6 +137,9 @@ public final class AuthenticationService: AuthenticationServicing, @unchecked Se
     /// Set when the password stage provably reached the MZFinance backend;
     /// used by the 2FA verdict line.
     private var passwordReachedMZFinance = false
+    /// Fingerprint fields of the most recent password-stage request, for
+    /// the passwordVs2FAMatched comparison on the 2FA verdict line.
+    private var passwordFingerprint: (headerNames: String, userAgentHash: String, contentType: String, host: String)?
 
     public init(
         http: HTTPClient,
@@ -213,9 +216,13 @@ public final class AuthenticationService: AuthenticationServicing, @unchecked Se
             signerGeneration += 1
             Log.info(.auth, "preparing fresh SAP signer for 2FA (signerGeneration=\(signerGeneration), same guid/machineID)")
             signer = try await signerFactory(Data(guid.utf8))
-        } else if signer == nil {
-            progress?(.initializingSigner)
-            signer = try await signerFactory(Data(guid.utf8))
+        } else {
+            if signer == nil {
+                progress?(.initializingSigner)
+                signer = try await signerFactory(Data(guid.utf8))
+            }
+            // signerGeneration counts signers built AFTER the initial one,
+            // so the password stage logs 0 and a fresh 2FA signer logs 1.
         }
         progress?(.fetchingConfiguration)
         Log.info(.auth, "sign-in start (guid resolved, \(Self.appVersionDescription))")
@@ -320,11 +327,35 @@ public final class AuthenticationService: AuthenticationServicing, @unchecked Se
             let finalBodySHA = SHA256Streamer.hash(data: body)
             let bodySignatureMatched = finalBodySHA == bodySHA
             let headerNames = request.headers.keys.sorted().joined(separator: ",")
+            let userAgentHash = Self.shortHash(of: Self.userAgentDescription)
+            let contentType = request.headers["Content-Type"] ?? "?"
+            // passwordVs2FAMatched: the two stages of this flow share the
+            // method, content type, header-name set, UA, and endpoint.
+            let passwordVs2FAMatched: Bool
+            if normalizedCode == nil {
+                passwordFingerprint = (headerNames: headerNames, userAgentHash: userAgentHash, contentType: contentType, host: endpoint.host ?? "")
+                passwordVs2FAMatched = true
+            } else if let pw = passwordFingerprint {
+                passwordVs2FAMatched = pw.headerNames == headerNames
+                    && pw.userAgentHash == userAgentHash
+                    && pw.contentType == contentType
+                    && pw.host == (endpoint.host ?? "")
+            } else {
+                passwordVs2FAMatched = false
+            }
+            // configuratorProfileMatched: the request carries the exact
+            // stable profile Apple's Configurator sends.
+            let configuratorProfileMatched = request.method == "POST"
+                && request.headers["Accept"] == "*/*"
+                && contentType == "application/x-www-form-urlencoded"
+                && request.headers["User-Agent"] != nil
+                && request.headers["X-Apple-ActionSignature"] != nil
+                && (endpoint.host == "buy.itunes.apple.com" || (endpoint.host?.hasSuffix("-buy.itunes.apple.com") ?? false))
             Log.info(.auth,
                 "[auth][fingerprint] id=\(requestID) method=\(request.method) scheme=\(endpoint.scheme ?? "?") "
                 + "hostname=\(endpoint.host ?? "?") path=\(endpoint.path) "
-                + "accept=nil contentType=\(request.headers["Content-Type"] ?? "?") contentLength=\(body.count) "
-                + "userAgentHash=\(Self.shortHash(of: Self.userAgentDescription)) "
+                + "accept=\(request.headers["Accept"] ?? "nil") contentType=\(contentType) contentLength=\(body.count) "
+                + "userAgentPresent=\(request.headers["User-Agent"] != nil) userAgentHash=\(userAgentHash) userAgentLength=\(Self.userAgentDescription.count) "
                 + "headerNames=[\(headerNames)] actionSignaturePresent=true actionSignatureLength=\(signature.count) "
                 + "finalBodySHA256=\(finalBodySHA) bodySignatureMatched=\(bodySignatureMatched)")
             let endpointComponents = URLComponents(url: endpoint, resolvingAgainstBaseURL: false)
@@ -358,16 +389,16 @@ public final class AuthenticationService: AuthenticationServicing, @unchecked Se
                         Log.info(.auth,
                             "[auth][verdict] passwordReachedMZFinance=\(passwordReachedMZFinance) twoFAReachedMZFinance=true "
                             + "status=\(response.statusCode) payloadMode=\(experiment.payloadMode == .upstreamParity ? "upstreamParity" : "legacyCreateSession") "
-                            + "payloadAttempt=\(payloadAttempt) signerFresh=\(signerGeneration > 1) sameGUID=true sameMachineID=true "
-                            + "cookieNames=[\(cookieNames2.joined(separator: ","))] HTTPFingerprintMatched=true bodySignatureMatched=\(bodySignatureMatched)")
+                            + "payloadAttempt=\(payloadAttempt) signerFresh=\(signerGeneration >= 1) sameGUID=true sameMachineID=true "
+                            + "cookieNames=[\(cookieNames2.joined(separator: ","))] passwordVs2FAMatched=\(passwordVs2FAMatched) configuratorProfileMatched=\(configuratorProfileMatched) bodySignatureMatched=\(bodySignatureMatched)")
                     }
                 } else if normalizedCode != nil, layer == .edge {
                     let cookieNames2 = await (http as? CookieInspecting)?.cookieNames(for: endpoint) ?? []
                     Log.info(.auth,
                         "[auth][verdict] passwordReachedMZFinance=\(passwordReachedMZFinance) twoFAReachedMZFinance=false "
                         + "status=\(response.statusCode) payloadMode=\(experiment.payloadMode == .upstreamParity ? "upstreamParity" : "legacyCreateSession") "
-                        + "payloadAttempt=\(payloadAttempt) signerFresh=\(signerGeneration > 1) sameGUID=true sameMachineID=true "
-                        + "cookieNames=[\(cookieNames2.joined(separator: ","))] HTTPFingerprintMatched=true bodySignatureMatched=\(bodySignatureMatched)")
+                        + "payloadAttempt=\(payloadAttempt) signerFresh=\(signerGeneration >= 1) sameGUID=true sameMachineID=true "
+                        + "cookieNames=[\(cookieNames2.joined(separator: ","))] passwordVs2FAMatched=\(passwordVs2FAMatched) configuratorProfileMatched=\(configuratorProfileMatched) bodySignatureMatched=\(bodySignatureMatched)")
                 }
             } catch {
                 Log.error(.auth, "authenticate request failed: \(String(describing: type(of: error)))")
@@ -588,10 +619,13 @@ public final class AuthenticationService: AuthenticationServicing, @unchecked Se
             let hasAOS = response.header("apple-originating-system") != nil
             let hasRequestUUID = response.header("x-apple-request-uuid") != nil
             if hasPlist || isXML || hasAOS || hasRequestUUID { return .mzFinance }
-            // A bodyless 204/404/5xx with no backend evidence never reached
-            // the MZFinance application.
-            if response.statusCode == 204 || response.statusCode == 404
-                || (response.statusCode >= 500 && response.statusCode < 600) {
+            // EDGE: a response with no MZFinance application evidence —
+            // bodyless 204, a 404 without originating-system or request
+            // UUID, or a 301 with no Location. Never label these MZFINANCE.
+            if response.statusCode == 204
+                || (response.statusCode == 404 && !hasAOS && !hasRequestUUID)
+                || (response.statusCode == 301 && response.header("location") == nil)
+                || (response.statusCode >= 500 && response.statusCode < 600 && response.data.isEmpty) {
                 return .edge
             }
             return .unknown
@@ -629,6 +663,7 @@ public final class AuthenticationService: AuthenticationServicing, @unchecked Se
             parts.append("jingleKeyPresent=\(response.header("x-apple-jingle-correlation-key") != nil)")
             parts.append("respondingInstancePresent=\(response.header("x-responding-instance") != nil)")
             parts.append("xDaiquiriInstancePresent=\(response.header("x-daiquiri-instance") != nil)")
+            parts.append("responseBodyLength=\(response.data.count)")
             parts.append("setCookieNames=[\(setCookies.joined(separator: ","))]")
             return parts.joined(separator: " ")
         }
