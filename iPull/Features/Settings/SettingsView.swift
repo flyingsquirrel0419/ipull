@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 import AppStoreCore
 
 /// Settings, shown both as the Settings tab and as the App Store-style
@@ -8,12 +9,42 @@ struct SettingsView: View {
 
     @EnvironmentObject private var environment: AppEnvironment
     @Environment(\.dismiss) private var dismiss
+    @State private var folderName = SaveLocation.defaultFolderName
+    @State private var keepLibraryCopy = SaveLocation.keepLibraryCopy
+    @State private var choosingFolder = false
+    @State private var folderError: String?
 
     var body: some View {
         NavigationStack {
             List {
                 Section {
                     NavigationLink { AccountView() } label: { profileRow }
+                }
+
+                Section {
+                    Button { choosingFolder = true } label: {
+                        LabeledContent {
+                            Text(folderName ?? "Ask Every Time")
+                                .foregroundStyle(.secondary)
+                        } label: {
+                            Label("Save Downloads To", systemImage: "folder")
+                                .foregroundStyle(.primary)
+                        }
+                    }
+                    if folderName != nil {
+                        Button("Ask Every Time") {
+                            try? SaveLocation.setDefaultFolder(nil)
+                            folderName = nil
+                        }
+                    }
+                    Toggle("Keep a Copy in Library", isOn: $keepLibraryCopy)
+                        .onChange(of: keepLibraryCopy) { _, keep in SaveLocation.keepLibraryCopy = keep }
+                } header: {
+                    Text("Downloads")
+                } footer: {
+                    Text(folderError ?? (folderName == nil
+                        ? "iPull asks where to save each IPA."
+                        : "IPAs are written to this folder in Files."))
                 }
 
                 Section("Storage") {
@@ -43,6 +74,24 @@ struct SettingsView: View {
                     Text("iPull downloads App Store packages for apps on your own Apple Account. It does not bypass DRM, sign, or install apps.")
                 }
             }
+            .fileImporter(isPresented: $choosingFolder, allowedContentTypes: [.folder]) { result in
+                switch result {
+                case .success(let folder):
+                    do {
+                        try SaveLocation.setDefaultFolder(folder)
+                        folderName = SaveLocation.defaultFolderName ?? folder.lastPathComponent
+                        folderError = nil
+                    } catch {
+                        folderError = "That folder can't be used. Choose another one."
+                    }
+                case .failure:
+                    break
+                }
+            }
+            .onAppear {
+                folderName = SaveLocation.defaultFolderName
+                keepLibraryCopy = SaveLocation.keepLibraryCopy
+            }
             .navigationTitle(presentedAsSheet ? "Account" : "Settings")
             .navigationBarTitleDisplayMode(presentedAsSheet ? .inline : .large)
             .toolbar {
@@ -62,6 +111,7 @@ struct SettingsView: View {
                 if let session = environment.session {
                     Text(session.displayName).font(.title3.weight(.semibold))
                     Text(session.email).font(.subheadline).foregroundStyle(.secondary)
+                    sessionStatus
                 } else {
                     Text("Sign In").font(.title3.weight(.semibold)).foregroundStyle(Color.accentColor)
                     Text("Apple Account for downloads").font(.subheadline).foregroundStyle(.secondary)
@@ -69,6 +119,23 @@ struct SettingsView: View {
             }
         }
         .padding(.vertical, 6)
+    }
+
+    @ViewBuilder
+    private var sessionStatus: some View {
+        switch environment.sessionCheck {
+        case .checking:
+            Label("Checking with Apple…", systemImage: "arrow.triangle.2.circlepath")
+                .font(.caption).foregroundStyle(.secondary)
+        case .valid:
+            Label("Signed in", systemImage: "checkmark.seal.fill")
+                .font(.caption).foregroundStyle(.green)
+        case .unverified:
+            Label("Couldn't reach Apple to verify", systemImage: "wifi.exclamationmark")
+                .font(.caption).foregroundStyle(.orange)
+        case .idle:
+            EmptyView()
+        }
     }
 
     private static var version: String {

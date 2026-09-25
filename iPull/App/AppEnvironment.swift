@@ -19,6 +19,15 @@ public final class AppEnvironment: ObservableObject {
     @Published public private(set) var authenticationProgress: AuthenticationProgress?
     @Published public private(set) var sapDownloadStartedAt: Date?
 
+    public enum SessionCheck: Equatable {
+        case idle, checking, valid, unverified
+    }
+    /// Result of the once-per-launch check that Apple still accepts the
+    /// stored token.
+    @Published public private(set) var sessionCheck: SessionCheck = .idle
+    /// Shown once when the stored session turned out to be dead.
+    @Published public var sessionNotice: String?
+
     public init() {
         let secrets = KeychainStore()
         let (progressStream, progressContinuation) = AsyncStream.makeStream(
@@ -93,6 +102,7 @@ public final class AppEnvironment: ObservableObject {
                 if !self.isAuthenticating && self.session == nil {
                     self.session = restored
                 }
+                await self.verifySession()
             } catch {
                 Log.error(.auth, "stored session unreadable; clearing it")
                 if !self.isAuthenticating && self.session == nil {
@@ -118,6 +128,7 @@ public final class AppEnvironment: ObservableObject {
             switch result {
             case .success(let session):
                 self.session = session
+                sessionCheck = .valid
                 needsTwoFactorCode = false
                 return .success(session)
             case .twoFactorRequired:
@@ -147,7 +158,35 @@ public final class AppEnvironment: ObservableObject {
     public func handleServiceError(_ error: AppStoreError) {
         guard error.requiresReauthentication, session != nil else { return }
         Log.info(.auth, "Apple rejected the stored session; signing out locally")
+        sessionNotice = "Your Apple Account session has ended. Sign in again to browse versions and download."
         Task { await signOut() }
+    }
+
+    /// Once per launch, ask Apple whether the stored token still works. A
+    /// download-product lookup is the cheapest authenticated call that needs
+    /// no signing; for an app the account doesn't own Apple answers "license
+    /// not found", which still proves the token is valid. Network failures
+    /// leave the session alone.
+    func verifySession() async {
+        guard let session, sessionCheck == .idle else { return }
+        sessionCheck = .checking
+        Log.info(.auth, "verifying stored session with Apple")
+        let probe = AppStoreApp(id: 361_309_726, bundleID: "com.apple.Pages", name: "Pages")
+        do {
+            _ = try await client.downloadMetadata.downloadMetadata(app: probe, session: session, externalVersionID: nil)
+            sessionCheck = .valid
+        } catch let error as AppStoreError where error.requiresReauthentication {
+            sessionCheck = .idle
+            handleServiceError(error)
+            return
+        } catch let error as AppStoreError where error == .appNotOwned {
+            sessionCheck = .valid
+        } catch {
+            sessionCheck = .unverified
+            Log.info(.auth, "session check inconclusive (\(String(describing: type(of: error))))")
+            return
+        }
+        Log.info(.auth, "stored session is valid")
     }
 
     /// Fill in artwork for rows saved before icons were stored.
@@ -173,6 +212,7 @@ public final class AppEnvironment: ObservableObject {
             Log.error(.auth, "sign-out: token removal failed (\(String(describing: type(of: error))))")
         }
         session = nil
+        sessionCheck = .idle
         needsTwoFactorCode = false
     }
 }

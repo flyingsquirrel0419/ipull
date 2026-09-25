@@ -30,6 +30,8 @@ public final class AppRouter: ObservableObject {
     /// rather than broadcast, because the Search tab's view may not exist
     /// yet when the request is made; it consumes this once it appears.
     @Published public var pendingSearch: String?
+    /// An app icon currently flying to the Downloads tab.
+    @Published var flight: IconFlight?
 
     public enum Tab: Hashable {
         case home, search, library, downloads, settings

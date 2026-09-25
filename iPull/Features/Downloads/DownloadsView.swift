@@ -75,7 +75,12 @@ struct DownloadsView: View {
         case .cancelled:
             Text("Cancelled").font(.caption).foregroundStyle(.secondary)
         default:
-            Text("Version \(record.version)").font(.caption).foregroundStyle(.secondary)
+            if let folder = record.savedFolderName {
+                Label("Saved to \(folder)", systemImage: "folder.fill")
+                    .font(.caption).foregroundStyle(.secondary)
+            } else {
+                Text("Version \(record.version) · In Library").font(.caption).foregroundStyle(.secondary)
+            }
         }
     }
 
