@@ -77,6 +77,7 @@ final class PurchasedViewModel: ObservableObject {
             return
         } catch let error as AppStoreError {
             state = error.requiresReauthentication ? .requiresSignIn : .unavailable(error.userMessage)
+            environment.handleServiceError(error)
         } catch {
             state = .unavailable("The purchased-apps endpoint is unavailable. Search still works.")
         }

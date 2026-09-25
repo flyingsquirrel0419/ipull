@@ -43,6 +43,14 @@ struct LibraryView: View {
             }
             .navigationTitle("Library")
             .toolbar { AccountToolbarButton() }
+            .task {
+                for item in items where item.iconURLString == nil {
+                    if let url = await environment.iconURL(forAppID: item.appID) {
+                        item.iconURLString = url.absoluteString
+                    }
+                }
+                try? modelContext.save()
+            }
             .sheet(item: $itemToShare) { item in
                 ShareSheetView(items: [environment.storage.absoluteURL(forRelative: item.relativeFilePath)])
             }
@@ -136,7 +144,7 @@ struct LibraryRow: View {
 
     var body: some View {
         HStack(spacing: 16) {
-            AppIconView(url: nil, name: item.appName, size: 60)
+            AppIconView(url: item.iconURL, name: item.appName, size: 60)
             VStack(alignment: .leading, spacing: 2) {
                 Text(item.appName).font(.body).lineLimit(2)
                 Text("Version \(item.version)").font(.subheadline).foregroundStyle(.secondary)

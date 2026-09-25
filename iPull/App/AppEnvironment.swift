@@ -59,7 +59,8 @@ public final class AppEnvironment: ObservableObject {
                 bundleID: record.bundleID,
                 appID: record.appID,
                 fileSizeBytes: size,
-                relativeFilePath: relative
+                relativeFilePath: relative,
+                iconURL: record.iconURL
             )
             context.insert(item)
             try? context.save()
@@ -139,6 +140,20 @@ public final class AppEnvironment: ObservableObject {
             needsTwoFactorCode = false
             return .failure(.unknown(String(describing: type(of: error))))
         }
+    }
+
+    /// Apple rejected the stored token (password changed, signed out
+    /// elsewhere, expired). Drop it so the UI stops claiming to be signed in.
+    public func handleServiceError(_ error: AppStoreError) {
+        guard error.requiresReauthentication, session != nil else { return }
+        Log.info(.auth, "Apple rejected the stored session; signing out locally")
+        Task { await signOut() }
+    }
+
+    /// Fill in artwork for rows saved before icons were stored.
+    public func iconURL(forAppID appID: Int64) async -> URL? {
+        let country = session?.countryCode ?? "us"
+        return try? await client.search.lookup(appID: appID, countryCode: country).iconURL
     }
 
     /// Abandon a pending two-factor prompt (user tapped "Use a different

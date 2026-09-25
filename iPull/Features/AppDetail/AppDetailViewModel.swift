@@ -74,6 +74,7 @@ final class AppDetailViewModel: ObservableObject {
             switch error {
             case .sessionExpired, .authenticationRequired:
                 versionState = .requiresSignIn
+                environment.handleServiceError(error)
             case .appNotOwned, .purchaseRequired:
                 // Try to acquire a free license, then retry once.
                 await acquireAndRetry(app: app, environment: environment, session: session)
@@ -90,7 +91,8 @@ final class AppDetailViewModel: ObservableObject {
             try await environment.client.purchase.acquireLicense(app: app, session: session)
             await loadVersions(app: app, environment: environment)
         } catch let error as AppStoreError {
-            versionState = .unavailable(error.userMessage)
+            versionState = error.requiresReauthentication ? .requiresSignIn : .unavailable(error.userMessage)
+            environment.handleServiceError(error)
         } catch {
             versionState = .unavailable(AppStoreError.appNotOwned.userMessage)
         }
@@ -141,6 +143,7 @@ final class AppDetailViewModel: ObservableObject {
         } catch let error as AppStoreError {
             Log.error(.download, "download URL resolution failed: \(error)")
             downloadStatus = error.userMessage
+            environment.handleServiceError(error)
         } catch {
             Log.error(.download, "download URL resolution failed: \(String(describing: type(of: error)))")
             downloadStatus = AppStoreError.downloadFailed("resolve").userMessage

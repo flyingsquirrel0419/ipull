@@ -61,7 +61,8 @@ public final class DownloadManager: NSObject, ObservableObject {
             appID: app.id, appName: app.name, bundleID: app.bundleID,
             version: version.displayVersion ?? version.externalVersionID,
             externalVersionID: version.externalVersionID, state: .queued,
-            totalBytes: app.fileSizeBytes ?? 0
+            totalBytes: app.fileSizeBytes ?? 0,
+            iconURL: app.iconURL
         )
         pendingURLs[record.id] = cdnURL
         records.append(record)
