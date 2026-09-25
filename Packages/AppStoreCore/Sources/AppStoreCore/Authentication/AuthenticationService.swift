@@ -90,6 +90,10 @@ public final class AuthenticationService: AuthenticationServicing, @unchecked Se
     /// Bumped each time the device identity is rotated; ties a log line to
     /// one identity across password and 2FA stages.
     private var identityGeneration = 1
+    /// Monotonic counter of SAP signer instances created in this service's
+    /// lifetime. Diagnostic only — proves the 2FA submit signed with a
+    /// different signer object than the password stage.
+    private var signerGeneration = 0
 
     public init(
         http: HTTPClient,
@@ -151,12 +155,18 @@ public final class AuthenticationService: AuthenticationServicing, @unchecked Se
         }
 
         var guid = try identityProvider(secrets)
-        // Reuse the established SAP session when one exists. The 2FA
-        // challenge Apple issued is bound to that session; creating a new
-        // signer (and thus a new guest session) makes the server unable to
-        // verify password+code, which it reports as failureType 5020
-        // ("Did you forget your password?").
-        if signer == nil {
+        // Reference-flow diagnostic: a 2FA submit is a fresh Login
+        // invocation upstream, which builds a NEW SAP signer on the same
+        // persistent machine identity (GUID/machineID unchanged, cookies
+        // preserved). Reusing the password-stage signer makes the edge
+        // answer the 2FA submit with an empty 404 on-device; whether a
+        // fresh signer changes that is exactly what this build measures.
+        if normalizedCode != nil {
+            progress?(.initializingSigner)
+            signerGeneration += 1
+            Log.info(.auth, "preparing fresh SAP signer for 2FA (signerGeneration=\(signerGeneration), same guid/machineID)")
+            signer = try await signerFactory(Data(guid.utf8))
+        } else if signer == nil {
             progress?(.initializingSigner)
             signer = try await signerFactory(Data(guid.utf8))
         }
@@ -177,6 +187,12 @@ public final class AuthenticationService: AuthenticationServicing, @unchecked Se
         // Endpoint selection rule: the bag's auth endpoint is the default.
         // Only an actual HTTP 302 Location from Apple may replace it —
         // a Pod/itspod response header is routing metadata, never a host.
+        // A fresh password flow resets flow-local routing metadata so a
+        // stale pod ID from an earlier challenge cannot confuse diagnostics.
+        if normalizedCode == nil {
+            assignedPodID = nil
+            authenticationRedirectURL = nil
+        }
         var endpoint = authenticationRedirectURL ?? bag.authEndpoint
         let stage = normalizedCode == nil ? "password" : "2fa"
         Log.info(.auth, "AUTH FLOW ID=\(Self.shortHash(of: guid)) stage=\(stage) identityGeneration=\(identityGeneration)")
@@ -217,11 +233,17 @@ public final class AuthenticationService: AuthenticationServicing, @unchecked Se
             // immutable Data value, no reserialization). These hashes let a
             // device log prove 2FA payload parity without exposing secrets.
             let bodySHA = SHA256Streamer.hash(data: body)
+            // payloadAttempt and the field-name set are read back from the
+            // SERIALIZED body, not copied from the variables that built it,
+            // so the log reflects what Apple actually receives.
+            let parsedBody = (try? PropertyListSerialization.propertyList(from: body, format: nil)) as? [String: Any]
+            let payloadAttempt = parsedBody?["attempt"] as? String ?? "?"
+            let payloadFieldNames = parsedBody?.keys.sorted().joined(separator: ",") ?? "?"
             let signature: String
             do {
                 progress?(.signingRequest)
                 signature = try await signer.sign(body: body)
-                Log.info(.auth, "SAP signature produced (attempt \(attempt)); signedBodySHA256=\(bodySHA)")
+                Log.info(.auth, "SAP signature produced (payloadAttempt=\(payloadAttempt), signerGeneration=\(signerGeneration)); signedBodySHA256=\(bodySHA)")
             } catch {
                 // Log only the error type: emulator errors may embed the
                 // signed body, which contains the password in percent-encoded
@@ -230,9 +252,9 @@ public final class AuthenticationService: AuthenticationServicing, @unchecked Se
                 throw error
             }
             Log.info(.auth,
-                "authenticate request: stage=\(stage) attempt=\(attempt) guidHash=\(Self.shortHash(of: guid)) machineIDHash=\(Self.shortHash(of: guid)) "
+                "authenticate request: stage=\(stage) payloadAttempt=\(payloadAttempt) guidHash=\(Self.shortHash(of: guid)) machineIDHash=\(Self.shortHash(of: guid)) "
                 + "passwordLength=\(password.count) authCodeLength=\(normalizedCode?.count ?? 0) digitsOnly=\(normalizedCode != nil) "
-                + "combinedPasswordLength=\(passwordField.count) bodySHA256=\(bodySHA)")
+                + "combinedPasswordLength=\(passwordField.count) bodySHA256=\(bodySHA) payloadFieldNames=[\(payloadFieldNames)] signerGeneration=\(signerGeneration)")
 
             let request = HTTPRequest(
                 url: endpoint,
@@ -464,18 +486,31 @@ public final class AuthenticationService: AuthenticationServicing, @unchecked Se
     enum AppleAuthResponseLayer: String, Sendable {
         case edge = "EDGE"
         case mzFinance = "MZFINANCE"
-        case storePod = "STORE_POD"
+        case storePodRedirect = "STORE_POD_REDIRECT"
         case unknown = "UNKNOWN"
 
         static func classify(_ response: HTTPResponse) -> AppleAuthResponseLayer {
+            // A 302 with an Apple pod Location is explicit store-pod routing.
+            if response.statusCode == 302, let location = response.header("location"),
+               let url = URL(string: location), let host = url.host?.lowercased(),
+               host == "buy.itunes.apple.com" || host.hasSuffix("-buy.itunes.apple.com") {
+                return .storePodRedirect
+            }
+            // MZFinance application responses carry substantive evidence:
+            // a parseable plist body, an XML content type, the originating
+            // system tag, or a request UUID. A single x-responding-instance
+            // or x-daiquiri header is NOT sufficient — edge nodes add those.
             let hasPlist = (try? PropertyListSerialization.propertyList(from: response.data, format: nil)) != nil
-            if response.header("pod") != nil || response.header("itspod") != nil { return .storePod }
-            if response.header("x-apple-request-uuid") != nil
-                || response.header("apple-originating-system") != nil
-                || response.header("x-responding-instance") != nil
-                || hasPlist { return .mzFinance }
-            if response.statusCode >= 500 { return .edge }
-            if response.statusCode == 404 && response.data.isEmpty { return .edge }
+            let isXML = response.header("content-type")?.lowercased().contains("xml") ?? false
+            let hasAOS = response.header("apple-originating-system") != nil
+            let hasRequestUUID = response.header("x-apple-request-uuid") != nil
+            if hasPlist || isXML || hasAOS || hasRequestUUID { return .mzFinance }
+            // A bodyless 204/404/5xx with no backend evidence never reached
+            // the MZFinance application.
+            if response.statusCode == 204 || response.statusCode == 404
+                || (response.statusCode >= 500 && response.statusCode < 600) {
+                return .edge
+            }
             return .unknown
         }
 

@@ -178,7 +178,7 @@ final class AuthenticationServiceTests: XCTestCase {
         XCTAssertNil(bodyPlist["createSession"])
     }
 
-    func testTwoFactorSubmissionReusesEstablishedSigner() async throws {
+    func testTwoFactorSubmissionUsesFreshSignerOnSameIdentity() async throws {
         let http = ScriptedHTTP()
         http.responses = [
             // First signIn: 2FA required.
@@ -204,10 +204,12 @@ final class AuthenticationServiceTests: XCTestCase {
         let second = try await service.signIn(email: "u@e.com", password: "pw", twoFactorCode: "123456")
         guard case .success = second else { return XCTFail("Expected success") }
 
-        // The code submission must reuse the signer established for the
-        // challenge; creating a new one would start a fresh SAP session
-        // and make Apple unable to verify password+code (failureType 5020).
-        XCTAssertEqual(factory.hardwareIDs.count, 1)
+        // Reference-flow diagnostic: the 2FA submit builds a NEW signer on
+        // the SAME machine identity — two factory calls, identical
+        // hardware IDs (GUID/machineID preserved, no rotation).
+        XCTAssertEqual(factory.hardwareIDs.count, 2)
+        guard factory.hardwareIDs.count == 2 else { return }
+        XCTAssertEqual(factory.hardwareIDs[0], factory.hardwareIDs[1])
     }
 
     func testFailureType5020WithCodeMapsToInvalidTwoFactorCode() async {
@@ -252,24 +254,29 @@ final class AuthenticationServiceTests: XCTestCase {
         let result = try await service.signIn(email: "u@e.com", password: "pw", twoFactorCode: "123456")
         guard case .success = result else { return XCTFail("Expected success after 404 retries") }
 
-        // No rotation: factory called once (initial), same GUID throughout.
-        XCTAssertEqual(factory.hardwareIDs.count, 1)
-        XCTAssertEqual(factory.hardwareIDs[0], Data("AABBCCDDEEFF".utf8))
+        // No rotation: every signer (this call builds a fresh one for the
+        // 2FA submit per the reference-flow diagnostic) uses the same GUID.
+        XCTAssertFalse(factory.hardwareIDs.isEmpty)
+        for id in factory.hardwareIDs {
+            XCTAssertEqual(id, Data("AABBCCDDEEFF".utf8))
+        }
         let stored = try XCTUnwrap(secrets.load(key: DeviceIdentity.keychainKey))
         XCTAssertEqual(String(data: stored, encoding: .utf8), "AABBCCDDEEFF")
     }
 
-    func testTwoFactorEmpty404ExhaustedMapsToInvalidTwoFactorCode() async {
+    func testTwoFactorEmpty404ExhaustedMapsToInvalidTwoFactorCode() async throws {
         let http = ScriptedHTTP()
         http.responses = (0..<4).map { _ in
             HTTPResponse(statusCode: 404, headers: [:], data: Data())
         }
         let factory = RecordingSignerFactory()
+        let secrets = InMemorySecretStore()
+        try secrets.save(Data("AABBCCDDEEFF".utf8), for: DeviceIdentity.keychainKey)
         let service = AuthenticationService(
             http: http,
             bagProvider: MockBag(),
             signerFactory: { id in try await factory.make(id) },
-            secrets: InMemorySecretStore(),
+            secrets: secrets,
             sleep: { _ in }
         )
 
@@ -282,8 +289,11 @@ final class AuthenticationServiceTests: XCTestCase {
             XCTFail("Wrong error: \(error)")
         }
 
-        // No rotation attempted.
-        XCTAssertEqual(factory.hardwareIDs.count, 1)
+        // No rotation attempted: all signers share the same hardware ID.
+        XCTAssertFalse(factory.hardwareIDs.isEmpty)
+        for id in factory.hardwareIDs {
+            XCTAssertEqual(id, Data("AABBCCDDEEFF".utf8))
+        }
         XCTAssertEqual(http.requestCount, 4)
     }
 
@@ -311,7 +321,10 @@ final class AuthenticationServiceTests: XCTestCase {
 
         let result = try await service.signIn(email: "u@e.com", password: "pw", twoFactorCode: "123456")
         guard case .success = result else { return XCTFail("Expected success after transient retries") }
-        XCTAssertEqual(factory.hardwareIDs.count, 1)
+        XCTAssertFalse(factory.hardwareIDs.isEmpty)
+        for id in factory.hardwareIDs {
+            XCTAssertEqual(id, Data("AABBCCDDEEFF".utf8))
+        }
         XCTAssertEqual(http.requestCount, 3)
     }
 

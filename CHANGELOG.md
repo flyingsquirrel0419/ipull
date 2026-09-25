@@ -2,6 +2,28 @@
 
 All notable, user-visible changes are listed here. Dates are ISO 8601.
 
+## [0.3.30] - 2026-09-25
+
+### Changed
+
+- 2FA submissions now sign with a FRESH SAP signer built on the same
+  persistent machine identity (GUID/machineID unchanged, cookies
+  preserved), matching the reference flow where a 2FA submit is a new
+  Login invocation. This is the on-device experiment that decides whether
+  the empty-404 2FA rejections come from signer reuse or from Apple's
+  edge/request fingerprinting.
+- The response layer classifier is conservative: only a parseable plist,
+  an XML content type, Apple-Originating-System, or a request UUID marks
+  MZFINANCE; a 302 with a valid Apple pod Location is STORE_POD_REDIRECT;
+  a bodyless 204/404/5xx without backend evidence is EDGE. A lone
+  x-responding-instance header no longer marks a response as MZFINANCE.
+- Request logs now report payloadAttempt and payloadFieldNames read back
+  from the serialized body, plus signerGeneration, so the log proves what
+  Apple actually receives.
+- A fresh password flow resets flow-local routing metadata (podID,
+  redirectURL) so a stale pod from an earlier challenge cannot confuse
+  diagnostics.
+
 ## [0.3.29] - 2026-09-25
 
 ### Added
