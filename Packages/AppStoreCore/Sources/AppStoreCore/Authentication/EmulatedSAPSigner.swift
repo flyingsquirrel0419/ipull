@@ -142,4 +142,19 @@ public actor EmulatedSAPSigner: SAPSigning {
         self.runtime = runtime
         self.context = context
     }
+
+    /// End the SAP session so the next signer starts clean. ipatool closes
+    /// the password-stage session before building the 2FA signer; keeping
+    /// ours open leaves a server-registered session behind while the new
+    /// one performs a second setup exchange, which the edge may treat as
+    /// concurrent-session abuse on one machine identity.
+    public func closeSession() async {
+        if let runtime, context != 0 {
+            try? runtime.teardown(context: context)
+        }
+        runtime?.close()
+        runtime = nil
+        context = 0
+        state = .idle
+    }
 }

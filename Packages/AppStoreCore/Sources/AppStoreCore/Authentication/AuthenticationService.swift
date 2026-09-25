@@ -8,6 +8,13 @@ public protocol SAPSigning: Sendable {
     func sign(body: Data) async throws -> String
 }
 
+/// Optional teardown for signers backed by a server-registered session.
+/// ipatool closes the password-stage SAP session before building the 2FA
+/// signer; AuthenticationService mirrors that when the signer supports it.
+public protocol SAPSessionClosing: Sendable {
+    func closeSession() async
+}
+
 public enum AuthenticationResult: Sendable, Equatable {
     case success(AppleAccountSession)
     /// The account requires a six-digit trusted-device code before sign-in
@@ -235,6 +242,15 @@ public final class AuthenticationService: AuthenticationServicing, @unchecked Se
             }
             progress?(.initializingSigner)
             signerGeneration += 1
+            // Reference lifecycle: ipatool closes the password-stage SAP
+            // session (its setup exchange registered server-side state)
+            // before building the signer that signs the 2FA submit. Keep
+            // the same order here so only one registered SAP session for
+            // this machine identity is live when the 2FA request lands.
+            if let closing = signer as? SAPSessionClosing {
+                Log.info(.auth, "closing password-stage SAP session before 2FA signer setup")
+                await closing.closeSession()
+            }
             Log.info(.auth, "preparing fresh SAP signer for 2FA (signerGeneration=\(signerGeneration), same guid/machineID)")
             signer = try await signerFactory(Data(guid.utf8))
         } else {
@@ -691,6 +707,15 @@ public final class AuthenticationService: AuthenticationServicing, @unchecked Se
             // transaction or the edge splits them.
             parts.append("requestUUID=\(response.header("x-apple-request-uuid") ?? "nil")")
             parts.append("jingleCorrelationKey=\(response.header("x-apple-jingle-correlation-key") ?? "nil")")
+            // Apple transaction-correlation (X-Apple-Trans-*) headers:
+            // presence + hashed value, so a device trace can show whether
+            // the password and 2FA responses share one Apple transaction.
+            let trans = response.headers
+                .filter { $0.key.lowercased().hasPrefix("x-apple-trans") }
+                .sorted { $0.key < $1.key }
+                .map { "\($0.key):\(AuthenticationService.shortHash(of: $0.value))" }
+            parts.append("transHeaders=[\(trans.joined(separator: ","))]")
+            parts.append("retryAfter=\(response.header("Retry-After") ?? "nil")")
             parts.append("jingleKeyPresent=\(response.header("x-apple-jingle-correlation-key") != nil)")
             parts.append("respondingInstancePresent=\(response.header("x-responding-instance") != nil)")
             parts.append("xDaiquiriInstancePresent=\(response.header("x-daiquiri-instance") != nil)")

@@ -2,6 +2,27 @@
 
 All notable, user-visible changes are listed here. Dates are ISO 8601.
 
+## [0.3.36] - 2026-09-25
+
+### Changed
+
+- The 2FA submit now mirrors ipatool's SAP signer lifecycle exactly: the
+  password-stage SAP session is closed before the fresh 2FA signer is
+  built. v0.3.34's trace proved the edge also rejects password requests
+  on a ~35-minute-old identity (anti-replay freshness), so the remaining
+  structural difference from the working reference is that this app ran
+  three SAP setup exchanges per flow with the old session left open.
+  Only one registered SAP session per machine identity is now live when
+  the 2FA request lands.
+
+### Added
+
+- The response log now includes Apple transaction-correlation
+  (X-Apple-Trans-*) header names with hashed values, plus Retry-After.
+  If password and 2FA responses share a Trans- token, a device trace can
+  prove how the edge groups the two stages; if a 404 carries a
+  Retry-After, a hidden rate limit stops being invisible.
+
 ## [0.3.33] - 2026-09-25
 
 ### Changed
