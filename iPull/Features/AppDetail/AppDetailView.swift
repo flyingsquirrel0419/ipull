@@ -132,31 +132,13 @@ struct AppDetailView: View {
         }
     }
 
-    /// Use the folder from Settings, or ask for one for this download.
     private func requestDownload() {
-        if let bookmark = SaveLocation.defaultBookmark {
-            startDownload(to: bookmark)
-        } else {
-            // No save folder in Settings: ask where this IPA goes.
-            // Cancelling still downloads, into iPull's Library.
-            FolderPicker.present { folder in
-                startDownload(to: folder.flatMap { Self.bookmark(for: $0) })
-            }
-        }
+        startDownload()
     }
 
-    private static func bookmark(for folder: URL) -> Data? {
-        do {
-            return try SaveLocation.bookmark(for: folder)
-        } catch {
-            Log.error(.download, "bookmarking the chosen folder failed: \(String(describing: type(of: error)))")
-            return nil
-        }
-    }
-
-    private func startDownload(to bookmark: Data?) {
+    private func startDownload() {
         Task {
-            guard await viewModel.download(environment: environment, destinationBookmark: bookmark),
+            guard await viewModel.download(environment: environment),
                   let app = viewModel.app else { return }
             if iconFrame != .zero {
                 router.flight = IconFlight(iconURL: app.iconURL, name: app.name, from: iconFrame)

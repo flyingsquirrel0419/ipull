@@ -27,8 +27,9 @@ public struct DownloadRecord: Codable, Sendable, Identifiable, Equatable {
     public var createdAt: Date
     /// Optional so records persisted by older builds still decode.
     public var iconURL: URL?
-    /// Security-scoped bookmark of the folder this IPA should land in.
-    public var destinationBookmark: Data?
+    /// Offer "Save to Files" when this download finishes. Optional so
+    /// records persisted by older builds still decode.
+    public var askWhereToSave: Bool?
     /// Folder name the finished IPA was written to, for the UI.
     public var savedFolderName: String?
 
@@ -45,7 +46,7 @@ public struct DownloadRecord: Codable, Sendable, Identifiable, Equatable {
         failureReason: String? = nil,
         createdAt: Date = .now,
         iconURL: URL? = nil,
-        destinationBookmark: Data? = nil
+        askWhereToSave: Bool = false
     ) {
         self.id = id
         self.appID = appID
@@ -59,7 +60,7 @@ public struct DownloadRecord: Codable, Sendable, Identifiable, Equatable {
         self.failureReason = failureReason
         self.createdAt = createdAt
         self.iconURL = iconURL
-        self.destinationBookmark = destinationBookmark
+        self.askWhereToSave = askWhereToSave
     }
 
     public var progress: Double {

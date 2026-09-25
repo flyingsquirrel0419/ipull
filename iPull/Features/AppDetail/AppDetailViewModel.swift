@@ -108,7 +108,7 @@ final class AppDetailViewModel: ObservableObject {
     /// Resolve and queue the selected version. Returns true once queued,
     /// which is the moment the UI plays the fly-to-Downloads animation.
     @discardableResult
-    func download(environment: AppEnvironment, destinationBookmark: Data?) async -> Bool {
+    func download(environment: AppEnvironment) async -> Bool {
         guard let app, let session = environment.session else {
             downloadStatus = AppStoreError.authenticationRequired.userMessage
             return false
@@ -119,13 +119,15 @@ final class AppDetailViewModel: ObservableObject {
 
         // Duplicate detection
         if let existing = environment.storage.existingFile(appID: app.id, version: version.displayVersion ?? version.externalVersionID) {
-            // Already in Library: write that copy to the chosen folder instead
-            // of downloading the same IPA again.
-            if let destinationBookmark,
-               let written = try? SaveLocation.export(existing, to: destinationBookmark, move: false) {
-                downloadStatus = "Saved to \(written.deletingLastPathComponent().lastPathComponent)."
-            } else {
-                downloadStatus = "Already downloaded — see Library."
+            // Already in Library: offer that copy instead of downloading the
+            // same IPA again.
+            downloadStatus = "Already downloaded — see Library."
+            if SaveLocation.askWhereToSave {
+                FilesExporter.present(existing) { [weak self] saved in
+                    if let saved {
+                        self?.downloadStatus = "Saved to \(saved.deletingLastPathComponent().lastPathComponent)."
+                    }
+                }
             }
             return false
         }
@@ -150,10 +152,10 @@ final class AppDetailViewModel: ObservableObject {
                 releaseDate: version.releaseDate,
                 isLatest: version.isLatest
             )
-            Log.info(.download, "download URL resolved; queueing (folder=\(destinationBookmark != nil))")
+            Log.info(.download, "download URL resolved; queueing (askWhereToSave=\(SaveLocation.askWhereToSave))")
             environment.rememberOwnedApp(app.id)
             environment.downloadManager.enqueue(app: app, version: resolvedVersion, cdnURL: metadata.url,
-                                                destinationBookmark: destinationBookmark)
+                                                askWhereToSave: SaveLocation.askWhereToSave)
             return true
         } catch let error as AppStoreError {
             Log.error(.download, "download URL resolution failed: \(error)")
