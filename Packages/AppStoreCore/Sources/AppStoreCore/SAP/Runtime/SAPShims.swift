@@ -58,6 +58,9 @@ public final class SAPShims {
     static let coreFPPath = "./CoreFP"
     static let fakeCoreFPHandle: UInt64 = 0xC0DE_F00D
     var icxsOffset = 0
+    /// IOKit iterator state: ipatool's IOIteratorNext yields one service
+    /// (1) then exhaustion (0), reset by IOServiceGetMatchingServices.
+    var ioIterator: UInt32 = 0
     static let coreFPIcxsPath = "./../CoreFP.icxs"
     static let coreFPFileDescriptor: UInt64 = 0x4943_5853  // "ICXS"
 
@@ -231,6 +234,8 @@ public final class SAPShims {
             }
         }
 
+        try register(names: ["_CFStringCreateWithCStringNoCopy"]) { try $0.setReturn(0) }
+
         try register(names: ["_CFStringGetCString"]) { shims in
             // ipatool: terminate the output buffer, report success.
             let buffer = try shims.argument(1)
@@ -252,10 +257,14 @@ public final class SAPShims {
                 var tv = Data(count: 16)
                 tv.withUnsafeMutableBytes { ptr in
                     ptr.storeBytes(of: UInt64(now), toByteOffset: 0, as: UInt64.self)
-                    ptr.storeBytes(of: UInt64(now.truncatingRemainder(dividingBy: 1) * 1_000_000),
-                                   toByteOffset: 8, as: UInt64.self)
+                    ptr.storeBytes(of: UInt32(now.truncatingRemainder(dividingBy: 1) * 1_000_000),
+                                   toByteOffset: 8, as: UInt32.self)
                 }
                 try shims.engine.write(address: timeval, data: tv)
+            }
+            let zone = try shims.argument(1)
+            if zone != 0 {
+                try shims.engine.write(address: zone, data: Data(count: 8))
             }
             try shims.setReturn(0)
         }
@@ -314,24 +323,32 @@ public final class SAPShims {
             try shims.setReturn(UInt64(bitPattern: -1))
         }
 
+        // IOKit shims must match ipatool exactly: the guest folds what it
+        // reads here into the machine fingerprint behind every signature.
+        // Divergent answers (no services, 8-byte writes into 32-bit handles,
+        // a write into the plane-name argument) produced signatures Apple
+        // accepted once per GUID and then refused, including the 2FA submit.
         try register(names: ["_IOIteratorNext"]) { shims in
-            // Return 0 (no more items) — iterator exhaustion.
-            try shims.setReturn(0)
+            shims.ioIterator &+= 1
+            try shims.setReturn(UInt64(shims.ioIterator % 2))
         }
         try register(names: ["_IORegistryEntryGetParentEntry"]) { shims in
-            let out = try shims.argument(1)
-            if out != 0 {
-                try shims.engine.write(address: out,
-                                       data: withUnsafeBytes(of: UInt64(0).littleEndian) { Data($0) })
+            let parent = try shims.argument(2)
+            guard parent != 0 else {
+                throw Error.dispatchFailed("parent registry entry output is null")
             }
+            try shims.engine.write(address: parent,
+                                   data: withUnsafeBytes(of: UInt32.max.littleEndian) { Data($0) })
             try shims.setReturn(0)
         }
         try register(names: ["_IOServiceGetMatchingServices"]) { shims in
             let iteratorOut = try shims.argument(2)
-            if iteratorOut != 0 {
-                try shims.engine.write(address: iteratorOut,
-                                       data: withUnsafeBytes(of: UInt64(0).littleEndian) { Data($0) })
+            guard iteratorOut != 0 else {
+                throw Error.dispatchFailed("matching services iterator output is null")
             }
+            shims.ioIterator = 0
+            try shims.engine.write(address: iteratorOut,
+                                   data: withUnsafeBytes(of: UInt32.max.littleEndian) { Data($0) })
             try shims.setReturn(0)
         }
         try register(names: ["_IOServiceGetMatchingService"]) { shims in
@@ -386,16 +403,11 @@ public final class SAPShims {
         }
 
         try register(names: ["_sysctlbyname"]) { shims in
-            let nameAddress = try shims.argument(0)
-            let oldp = try shims.argument(1)
+            // ipatool: report an empty value (length 0) and success.
             let oldlenp = try shims.argument(2)
-            let name = try shims.readGuestString(at: nameAddress)
-            if name == "kern.osversion", oldp != 0 {
-                try shims.writeGuestString("24C5089c", at: oldp)
-                if oldlenp != 0 {
-                    try shims.engine.write(address: oldlenp,
-                                           data: withUnsafeBytes(of: UInt64(9).littleEndian) { Data($0) })
-                }
+            if oldlenp != 0 {
+                try shims.engine.write(address: oldlenp,
+                                       data: withUnsafeBytes(of: UInt64(0).littleEndian) { Data($0) })
             }
             try shims.setReturn(0)
         }
@@ -403,7 +415,12 @@ public final class SAPShims {
         // Objective-C runtime stubs — the guest calls objc_msgSend for a
         // couple of read-only lookups; returning 0/nil is safe for the SAP
         // signing path (verified by the reference implementation's handler).
-        try register(names: ["_objc_msgSend", "_objc_msgSendSuper2", "_objc_msgSend_fixup"]) { shims in
+        try register(names: ["_objc_msgSend"]) { shims in
+            // ipatool: objectForKey: yields an opaque object, anything else nil.
+            let selector = try shims.readGuestString(at: try shims.argument(1))
+            try shims.setReturn(selector == "objectForKey:" ? Self.fakeHandle : 0)
+        }
+        try register(names: ["_objc_msgSendSuper2", "_objc_msgSend_fixup"]) { shims in
             try shims.setReturn(0)
         }
         try register(names: ["_objc_retain", "_objc_release", "_objc_retainAutoreleasedReturnValue",

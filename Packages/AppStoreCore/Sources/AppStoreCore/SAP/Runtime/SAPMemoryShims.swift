@@ -105,12 +105,15 @@ extension SAPShims {
             let dest = try shims.argument(0)
             let count = try shims.argument(1)
             try shims.engine.write(address: dest, data: Data(count: Int(count)))
-            try shims.setReturn(0)
+            try shims.setReturn(dest)
         }
         try register(names: ["___memcpy_chk"]) { shims in
             let dest = try shims.argument(0)
             let src = try shims.argument(1)
             let count = Int(try shims.argument(2))
+            guard UInt64(count) <= (try shims.argument(3)) else {
+                throw Error.dispatchFailed("checked copy exceeds destination")
+            }
             let data = try shims.engine.read(address: src, size: count)
             try shims.engine.write(address: dest, data: data)
             try shims.setReturn(dest)
@@ -119,6 +122,9 @@ extension SAPShims {
             let dest = try shims.argument(0)
             let value = try shims.argument(1)
             let count = Int(try shims.argument(2))
+            guard UInt64(count) <= (try shims.argument(3)) else {
+                throw Error.dispatchFailed("checked fill exceeds destination")
+            }
             try shims.engine.write(address: dest, data: Data(repeating: UInt8(value & 0xFF), count: count))
             try shims.setReturn(dest)
         }
@@ -144,10 +150,26 @@ extension SAPShims {
             }
             try shims.setReturn(length)
         }
-        try register(names: ["_strcmp", "_strncmp"]) { shims in
-            let a = try shims.readGuestString(at: try shims.argument(0))
-            let b = try shims.readGuestString(at: try shims.argument(1))
-            let result: Int64 = a == b ? 0 : (a < b ? -1 : 1)
+        try register(names: ["_strcmp"]) { shims in
+            let a = Array(try shims.readGuestString(at: try shims.argument(0)).utf8)
+            let b = Array(try shims.readGuestString(at: try shims.argument(1)).utf8)
+            let result: Int64 = a == b ? 0 : (a.lexicographicallyPrecedes(b) ? -1 : 1)
+            try shims.setReturn(UInt64(bitPattern: result))
+        }
+        try register(names: ["_strncmp"]) { shims in
+            // Honor n: comparing whole strings made prefix checks fail.
+            let a = try shims.argument(0)
+            let b = try shims.argument(1)
+            let length = try shims.argument(2)
+            var offset: UInt64 = 0
+            var result: Int64 = 0
+            while offset < length {
+                let x = try shims.engine.read(address: a + offset, size: 1)[0]
+                let y = try shims.engine.read(address: b + offset, size: 1)[0]
+                if x != y { result = Int64(x) - Int64(y); break }
+                if x == 0 { break }
+                offset += 1
+            }
             try shims.setReturn(UInt64(bitPattern: result))
         }
     }

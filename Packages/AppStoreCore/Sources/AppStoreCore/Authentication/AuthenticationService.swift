@@ -51,9 +51,9 @@ public protocol AuthenticationServicing: Sendable {
 ///       → on 302 → follow pod redirect
 ///       → on 429 → bounded exponential backoff honoring Retry-After,
 ///         then rethrow .rateLimited
-///       → empty edge 404/204 → rotate the device GUID once (the edge
-///         refuses a GUID after its first pass), resend with a fresh
-///         signer — on the 2FA submit too — then back off and rethrow
+///       → empty edge 404/204 on the password stage → rotate the device
+///         GUID once, resend with a fresh signer, then back off and rethrow;
+///         the 2FA submit keeps the challenge's GUID and only backs off
 ///       → success: dsPersonId + passwordToken + X-Set-Apple-Store-Front
 ///
 /// Passwords are never persisted; only the resulting session token goes to
@@ -437,18 +437,14 @@ public final class AuthenticationService: AuthenticationServicing, @unchecked Se
                 || response.statusCode == 429
                 || (response.statusCode == 404 && response.data.isEmpty)
                 || (response.statusCode >= 500 && response.statusCode < 600 && response.data.isEmpty)
-            // Edge refusal: an empty 404/204 that never reached MZFinance.
-            // On-device traces (v0.3.38/v0.3.39) show Apple's edge lets a
-            // GUID through exactly once — the fresh identity gets the 200
-            // challenge, and every later request on it, including the 2FA
-            // submit, is refused with an empty 404 however long we back
-            // off. The trusted-device code belongs to the account, not the
-            // GUID, so rotate right away (once per sign-in, either stage)
-            // and resend instead of burning the code's lifetime on retries
-            // the edge will never answer.
+            // Edge refusal: an empty 404/204 on the password stage. A used
+            // GUID is refused while a fresh one reaches MZFinance, so rotate
+            // right away instead of backing off on a GUID that stays refused.
+            // The 2FA submit keeps the challenge's GUID (ipatool parity):
+            // v0.3.40 showed a rotated identity is refused there as well.
             let isEdgeRefusal = (response.statusCode == 404 || response.statusCode == 204)
                 && response.data.isEmpty
-            if isEdgeRefusal && !didRotateGUID {
+            if isEdgeRefusal && !didRotateGUID && normalizedCode == nil {
                 didRotateGUID = true
                 identityGeneration += 1
                 Log.info(.auth, "edge refused guid (HTTP \(response.statusCode), stage=\(stage)); rotating identity and resending (identityGeneration=\(identityGeneration))")
@@ -480,9 +476,10 @@ public final class AuthenticationService: AuthenticationServicing, @unchecked Se
                 }
                 Log.error(.auth, "authenticate still HTTP \(response.statusCode) after \(rateLimitRetries) retries (stage=\(stage))")
                 if normalizedCode != nil {
-                    // Past the edge-refusal rotation (if any), a persistent
-                    // transient most likely means the code expired during
-                    // the retry window, so ask for a fresh one.
+                    // The 2FA submit never rotates (the challenge belongs to
+                    // this GUID); a persistent transient most likely means
+                    // the code expired during the retry window, so ask for
+                    // a fresh one.
                     logFailureDiagnostic(
                         stage: "2fa", lastStatus: response.statusCode, host: endpoint.host ?? "?",
                         guid: guid, retries: rateLimitRetries, rotations: didRotateGUID ? 1 : 0,
