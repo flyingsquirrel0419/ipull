@@ -60,11 +60,13 @@ public final class SAPRuntime {
     private let heapState = SAPShims.HeapState()
     private var scratchCursor: UInt64 = 0
     private var isClosed = false
+    /// RDTSC/RDTSCP executions seen by the deterministic clock (self-test).
+    private var tscCounter: UnsafeMutablePointer<UInt64>?
 
     private var entries: [String: UInt64] = [:]
     private var lastTrace: UnsafeMutableRawPointer?
 
-    public init(assets: SAPAssetBundle, hardwareID: Data) throws {
+    public init(assets: SAPAssetBundle, hardwareID: Data, deterministic: Bool = false) throws {
         engine = try UnicornEngine()
 
         // Return trap page with HLT (0xF4) so emu stops at returnAddress.
@@ -77,6 +79,10 @@ public final class SAPRuntime {
 
         shims = try SAPShims(engine: engine)
         shims.icxsData = assets.coreFPICXS
+        shims.deterministic = deterministic
+        if deterministic {
+            tscCounter = try engine.enableDeterministicTSC()
+        }
 
         // Trace the last executed instructions so a fault shows the path.
         let tracePtr = Unmanaged.passRetained(TraceBox()).toOpaque()
@@ -242,6 +248,23 @@ public final class SAPRuntime {
         guard Int32(truncatingIfNeeded: status) == 0 else {
             throw Error.teardownFailed(Int32(truncatingIfNeeded: status))
         }
+    }
+
+    /// Emulator self-test: initialize + first setup exchange with fixed
+    /// randomness, clock and hardware ID. The digest depends only on the
+    /// assets, the certificate and the correctness of the emulation, so a
+    /// device digest that differs from a desktop digest (same asset and
+    /// certificate hashes) means the on-device emulator miscomputes.
+    public static func selfTestDigest(assets: SAPAssetBundle, certificate: Data) throws -> String {
+        let hardwareID = Data([0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF])
+        let runtime = try SAPRuntime(assets: assets, hardwareID: hardwareID, deterministic: true)
+        defer { runtime.close() }
+        let context = try runtime.initialize(hardwareID: hardwareID)
+        let (output, state) = try runtime.exchange(version: 200, hardwareID: hardwareID,
+                                                   context: context, input: certificate)
+        try? runtime.teardown(context: context)
+        return "state=\(state) outLen=\(output.count) outSHA=\(SHA256Streamer.hash(data: output).prefix(16)) "
+            + "rdtsc=\(runtime.tscCounter?.pointee ?? 0)"
     }
 
     public func close() {

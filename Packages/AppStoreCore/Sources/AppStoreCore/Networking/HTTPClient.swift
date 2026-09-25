@@ -112,7 +112,16 @@ public final class URLSessionHTTPClient: HTTPClient, @unchecked Sendable {
         urlRequest.httpBody = body
 
         do {
+            #if canImport(Darwin)
+            // Auth requests record what CFNetwork actually put on the wire
+            // (negotiated protocol, final header names) — the one layer a
+            // desktop reproduction of the flow cannot exercise.
+            let metrics = request.url.path.hasSuffix("/authenticate") ? WireMetricsDelegate() : nil
+            let (data, response) = try await session.data(for: urlRequest, delegate: metrics)
+            metrics?.log()
+            #else
             let (data, response) = try await session.data(for: urlRequest)
+            #endif
             guard let http = response as? HTTPURLResponse else {
                 throw AppStoreError.unknown("Non-HTTP response")
             }
@@ -144,6 +153,26 @@ public final class URLSessionHTTPClient: HTTPClient, @unchecked Sendable {
 }
 
 #if canImport(FoundationNetworking) || canImport(Darwin)
+#if canImport(Darwin)
+private final class WireMetricsDelegate: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+    private var summary = "no metrics"
+
+    func urlSession(_ session: URLSession, task: URLSessionTask, didFinishCollecting metrics: URLSessionTaskMetrics) {
+        let transaction = metrics.transactionMetrics.last
+        let headerNames = task.currentRequest?.allHTTPHeaderFields?.keys.sorted().joined(separator: ",") ?? "?"
+        summary = "protocol=\(transaction?.networkProtocolName ?? "?") "
+            + "reusedConnection=\(transaction?.isReusedConnection ?? false) "
+            + "proxy=\(transaction?.isProxyConnection ?? false) "
+            + "tls=\(transaction?.negotiatedTLSProtocolVersion.map { String($0.rawValue, radix: 16) } ?? "?") "
+            + "sentHeaderNames=[\(headerNames)]"
+    }
+
+    func log() {
+        Log.info(.auth, "[auth][wire] \(summary)")
+    }
+}
+#endif
+
 extension URLSessionHTTPClient: StreamingHTTPClient {
     public func download(_ request: HTTPRequest, to destination: URL,
                          progress: (@Sendable (Int64, Int64?) -> Void)?) async throws -> HTTPResponse {

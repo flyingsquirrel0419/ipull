@@ -115,6 +115,15 @@ public final class UnicornEngine {
         return hookID
     }
 
+    /// Pin RDTSC/RDTSCP to a fixed-step counter (self-test only). Returns
+    /// the executed-instruction counter the hook maintains.
+    public func enableDeterministicTSC() throws -> UnsafeMutablePointer<UInt64> {
+        var counter: UnsafeMutablePointer<UInt64>?
+        let status = cu_hook_add_deterministic_tsc(engine, &counter)
+        guard status == 0, let counter else { throw Error.hookFailed(Self.describe(status)) }
+        return counter
+    }
+
     // MARK: - Helpers
 
     private static func describe(_ status: Int32) -> String {

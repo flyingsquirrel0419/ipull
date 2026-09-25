@@ -103,6 +103,7 @@ public actor EmulatedSAPSigner: SAPSigning, SAPSessionClosing {
 
         // 2. Assets + runtime
         let assets = try await assetProvider.load()
+        Self.runSelfTestOnce(assets: assets, certificate: certificate)
         progress?(.initializingSigner)
         let runtime = try SAPRuntime(assets: assets, hardwareID: hardwareID)
         Log.info(.auth, "SAP runtime ready; initializing session")
@@ -143,6 +144,24 @@ public actor EmulatedSAPSigner: SAPSigning, SAPSessionClosing {
         self.context = context
     }
 
+    private static let selfTestState = SelfTestState()
+
+    /// Log the deterministic emulator digest once per process, with the
+    /// asset and certificate hashes needed to reproduce it on a desktop.
+    private static func runSelfTestOnce(assets: SAPAssetBundle, certificate: Data) {
+        guard selfTestState.claim() else { return }
+        let inputs = "coreFP=\(SHA256Streamer.hash(data: assets.coreFP).prefix(12)) "
+            + "kit=\(SHA256Streamer.hash(data: assets.commerceKit).prefix(12)) "
+            + "icxs=\(SHA256Streamer.hash(data: assets.coreFPICXS).prefix(12)) "
+            + "cert=\(SHA256Streamer.hash(data: certificate).prefix(12))"
+        do {
+            let digest = try SAPRuntime.selfTestDigest(assets: assets, certificate: certificate)
+            Log.info(.auth, "SAP self-test \(digest) \(inputs)")
+        } catch {
+            Log.error(.auth, "SAP self-test failed: \(String(describing: type(of: error))) \(inputs)")
+        }
+    }
+
     /// End the SAP session so the next signer starts clean. ipatool closes
     /// the password-stage session before building the 2FA signer; keeping
     /// ours open leaves a server-registered session behind while the new
@@ -156,5 +175,18 @@ public actor EmulatedSAPSigner: SAPSigning, SAPSessionClosing {
         runtime = nil
         context = 0
         state = .idle
+    }
+}
+
+private final class SelfTestState: @unchecked Sendable {
+    private let lock = NSLock()
+    private var done = false
+
+    func claim() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        if done { return false }
+        done = true
+        return true
     }
 }

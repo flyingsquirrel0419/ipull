@@ -61,6 +61,12 @@ public final class SAPShims {
     /// IOKit iterator state: ipatool's IOIteratorNext yields one service
     /// (1) then exhaustion (0), reset by IOServiceGetMatchingServices.
     var ioIterator: UInt32 = 0
+    /// Self-test mode: arc4random and gettimeofday become fixed sequences
+    /// so the same guest computation yields the same bytes on every host.
+    /// Comparing that digest between a device and a desktop run shows
+    /// whether the on-device emulator computes correctly.
+    public var deterministic = false
+    var deterministicRandom: UInt32 = 0x1234_5678
     static let coreFPIcxsPath = "./../CoreFP.icxs"
     static let coreFPFileDescriptor: UInt64 = 0x4943_5853  // "ICXS"
 
@@ -247,13 +253,18 @@ public final class SAPShims {
         }
 
         try register(names: ["_arc4random"]) { shims in
-            try shims.setReturn(UInt64(UInt32.random(in: 0...UInt32.max)))
+            if shims.deterministic {
+                shims.deterministicRandom = shims.deterministicRandom &* 1_664_525 &+ 1_013_904_223
+                try shims.setReturn(UInt64(shims.deterministicRandom))
+            } else {
+                try shims.setReturn(UInt64(UInt32.random(in: 0...UInt32.max)))
+            }
         }
 
         try register(names: ["_gettimeofday"]) { shims in
             let timeval = try shims.argument(0)
             if timeval != 0 {
-                let now = Date().timeIntervalSince1970
+                let now = shims.deterministic ? 1_700_000_000.25 : Date().timeIntervalSince1970
                 var tv = Data(count: 16)
                 tv.withUnsafeMutableBytes { ptr in
                     ptr.storeBytes(of: UInt64(now), toByteOffset: 0, as: UInt64.self)

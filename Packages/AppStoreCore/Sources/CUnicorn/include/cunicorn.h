@@ -59,6 +59,12 @@ int  cu_hook_del(cu_engine engine, uint64_t hook_id);
 int  cu_hook_add_invalid_mem(cu_engine engine, cu_invalid_mem_hook_fn callback,
                              void *user_data, uint64_t *out_hook_id);
 
+/// Replace RDTSC/RDTSCP results with a counter that starts at zero and
+/// advances by a fixed step, so the guest reads the same clock on every
+/// host. Used only by the emulator self-test. *out_count receives the
+/// number of RDTSC/RDTSCP instructions executed.
+int  cu_hook_add_deterministic_tsc(cu_engine engine, uint64_t **out_count);
+
 const char *cu_strerror(int code);
 
 #ifdef __cplusplus
