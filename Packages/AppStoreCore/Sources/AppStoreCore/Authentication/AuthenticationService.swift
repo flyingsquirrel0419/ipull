@@ -313,6 +313,11 @@ public final class AuthenticationService: AuthenticationServicing, @unchecked Se
                 headers: [
                     "Content-Type": "application/x-www-form-urlencoded",
                     "X-Apple-ActionSignature": signature,
+                    // The HTTP client attaches these to every request;
+                    // recording them here keeps the fingerprint honest
+                    // instead of logging what the auth layer alone set.
+                    "Accept": "*/*",
+                    "User-Agent": Self.userAgentDescription,
                 ]
             )
             // Invariant: a malformed endpoint (e.g. a pod ID leaking into
