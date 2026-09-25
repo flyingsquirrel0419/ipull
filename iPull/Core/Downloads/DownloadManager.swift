@@ -109,6 +109,7 @@ public final class DownloadManager: NSObject, ObservableObject {
 
     private func start(record: DownloadRecord, url: URL) {
         let task: URLSessionDownloadTask
+        let resuming = resumeData[record.id] != nil
         if let data = resumeData[record.id] {
             task = session.downloadTask(withResumeData: data)
             resumeData.removeValue(forKey: record.id)
@@ -118,6 +119,7 @@ public final class DownloadManager: NSObject, ObservableObject {
         task.taskDescription = record.id.uuidString
         tasks[record.id] = task
         task.resume()
+        Log.info(.download, "download started (host \(url.host ?? "?"), resume=\(resuming))")
         update(record.id) { $0.state = .downloading }
     }
 
@@ -152,10 +154,36 @@ extension DownloadManager: URLSessionDownloadDelegate {
         _ session: URLSession, downloadTask: URLSessionDownloadTask, didFinishDownloadingTo location: URL
     ) {
         guard let idString = downloadTask.taskDescription, let id = UUID(uuidString: idString) else { return }
-        // Move immediately in this callback — the temp file is deleted when
-        // the delegate returns. Stream via FileManager, never load into RAM.
+        // The system deletes `location` as soon as this callback returns, so
+        // the file must be moved here, synchronously — moving it later from a
+        // main-actor Task found it already gone and failed every download.
+        let status = (downloadTask.response as? HTTPURLResponse)?.statusCode ?? 0
+        let staged = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ipull-\(id.uuidString).ipa")
+        let stageError: String? = {
+            guard (200...299).contains(status) else { return "HTTP \(status)" }
+            do {
+                try? FileManager.default.removeItem(at: staged)
+                try FileManager.default.moveItem(at: location, to: staged)
+                return nil
+            } catch {
+                return "stage failed: \(String(describing: type(of: error)))"
+            }
+        }()
         Task { @MainActor in
             guard let record = self.records.first(where: { $0.id == id }) else { return }
+            if let stageError {
+                Log.error(.download, "download finished but unusable (\(stageError))")
+                self.update(id) {
+                    $0.state = .failed
+                    $0.failureReason = status == 0 || (200...299).contains(status)
+                        ? AppStoreError.fileWriteFailed.userMessage
+                        : AppStoreError.downloadFailed("HTTP \(status)").userMessage
+                }
+                self.tasks.removeValue(forKey: id)
+                self.startNextIfPossible()
+                return
+            }
             let destination = self.storage.fileURL(
                 appName: record.appName, appID: record.appID, version: record.version
             )
@@ -166,7 +194,8 @@ extension DownloadManager: URLSessionDownloadDelegate {
                 if FileManager.default.fileExists(atPath: destination.path) {
                     try FileManager.default.removeItem(at: destination)
                 }
-                try FileManager.default.moveItem(at: location, to: destination)
+                try FileManager.default.moveItem(at: staged, to: destination)
+                Log.info(.download, "download completed (\(record.totalBytes) bytes)")
                 self.update(id) { $0.state = .completed }
                 self.tasks.removeValue(forKey: id)
                 self.pendingURLs.removeValue(forKey: id)
@@ -174,10 +203,14 @@ extension DownloadManager: URLSessionDownloadDelegate {
                 await self.onCompleted(record, destination)
                 self.startNextIfPossible()
             } catch {
+                Log.error(.download, "moving IPA into the library failed: \(String(describing: type(of: error)))")
+                try? FileManager.default.removeItem(at: staged)
                 self.update(id) {
                     $0.state = .failed
                     $0.failureReason = AppStoreError.fileWriteFailed.userMessage
                 }
+                self.tasks.removeValue(forKey: id)
+                self.startNextIfPossible()
             }
         }
     }
@@ -226,6 +259,7 @@ extension DownloadManager: URLSessionDownloadDelegate {
             if (error as? URLError)?.code == .cancelled {
                 return // cancel() already updated state
             }
+            Log.error(.download, "download failed: URLError \((error as? URLError)?.code.rawValue ?? nsError.code)")
             self.update(id) {
                 $0.state = .failed
                 $0.failureReason = AppStoreError.downloadFailed("network").userMessage

@@ -32,7 +32,7 @@ public final class AppRouter: ObservableObject {
     @Published public var pendingSearch: String?
 
     public enum Tab: Hashable {
-        case home, search, library, downloads
+        case home, search, library, downloads, settings
     }
 
     /// Handle ipull:// deep links and App Group handoffs from the Share

@@ -21,6 +21,10 @@ struct RootTabView: View {
             DownloadsView(manager: environment.downloadManager)
                 .tabItem { Label("Downloads", systemImage: "arrow.down.circle.fill") }
                 .tag(AppRouter.Tab.downloads)
+
+            SettingsView(presentedAsSheet: false)
+                .tabItem { Label("Settings", systemImage: "gearshape.fill") }
+                .tag(AppRouter.Tab.settings)
         }
         .sheet(isPresented: $router.isAccountPresented) {
             SettingsView()

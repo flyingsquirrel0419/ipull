@@ -135,11 +135,14 @@ final class AppDetailViewModel: ObservableObject {
                 releaseDate: version.releaseDate,
                 isLatest: version.isLatest
             )
+            Log.info(.download, "download URL resolved; queueing")
             environment.downloadManager.enqueue(app: app, version: resolvedVersion, cdnURL: metadata.url)
             downloadStatus = "Queued. See the Downloads tab."
         } catch let error as AppStoreError {
+            Log.error(.download, "download URL resolution failed: \(error)")
             downloadStatus = error.userMessage
         } catch {
+            Log.error(.download, "download URL resolution failed: \(String(describing: type(of: error)))")
             downloadStatus = AppStoreError.downloadFailed("resolve").userMessage
         }
     }

@@ -32,6 +32,7 @@ struct HomeView: View {
             }
             .scrollDismissesKeyboard(.interactively)
             .toolbar(.hidden, for: .navigationBar)
+            .task { RecentApp.removeDuplicates(in: modelContext) }
             .navigationDestination(for: AppRouter.Route.self) { RouteDestination(route: $0) }
             .confirmationDialog("Clear Recently Viewed?", isPresented: $confirmClear, titleVisibility: .visible) {
                 Button("Clear All", role: .destructive) { clearRecents() }
@@ -196,9 +197,9 @@ struct HomeView: View {
             .padding(.horizontal, 20)
 
             ScrollView(.horizontal, showsIndicators: false) {
-                LazyHGrid(rows: Array(repeating: GridItem(.fixed(80), spacing: 0), count: min(3, recents.count)),
+                LazyHGrid(rows: Array(repeating: GridItem(.fixed(80), spacing: 0), count: min(3, shelf.count)),
                           spacing: 16) {
-                    ForEach(Array(recents.prefix(12).enumerated()), id: \.element.persistentModelID) { index, recent in
+                    ForEach(Array(shelf.enumerated()), id: \.element.persistentModelID) { index, recent in
                         VStack(spacing: 0) {
                             Button { router.homePath.append(.appDetail(id: recent.appID)) } label: {
                                 AppRow(iconURL: recent.iconURL, name: recent.name,
@@ -210,7 +211,7 @@ struct HomeView: View {
                                     Label("Remove from Recently Viewed", systemImage: "minus.circle")
                                 }
                             }
-                            if (index + 1) % 3 != 0 && index < min(recents.count, 12) - 1 {
+                            if (index + 1) % 3 != 0 && index < shelf.count - 1 {
                                 Divider().padding(.leading, 76)
                             }
                         }
@@ -223,6 +224,8 @@ struct HomeView: View {
             .scrollTargetBehavior(.viewAligned)
         }
     }
+
+    private var shelf: [RecentApp] { Array(recents.uniqueByApp.prefix(12)) }
 
     // MARK: - Actions
 
@@ -260,7 +263,10 @@ struct HomeView: View {
     }
 
     private func remove(_ recent: RecentApp) {
-        withAnimation { modelContext.delete(recent) }
+        let appID = recent.appID
+        withAnimation {
+            for entry in recents where entry.appID == appID { modelContext.delete(entry) }
+        }
         try? modelContext.save()
     }
 
