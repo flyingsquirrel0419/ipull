@@ -137,6 +137,10 @@ public final class AuthenticationService: AuthenticationServicing, @unchecked Se
     /// Set when the password stage provably reached the MZFinance backend;
     /// used by the 2FA verdict line.
     private var passwordReachedMZFinance = false
+    /// When the current 2FA challenge was issued. Apple edge nodes need a
+    /// propagation window after the password response; a 2FA submit that
+    /// arrives inside that window is answered with an empty 404.
+    private var challengeIssuedAt: Date?
     /// Fingerprint fields of the most recent password-stage request, for
     /// the passwordVs2FAMatched comparison on the 2FA verdict line.
     private var passwordFingerprint: (headerNames: String, userAgentHash: String, contentType: String, host: String)?
@@ -212,6 +216,23 @@ public final class AuthenticationService: AuthenticationServicing, @unchecked Se
         // answer the 2FA submit with an empty 404 on-device; whether a
         // fresh signer changes that is exactly what this build measures.
         if normalizedCode != nil {
+            // Challenge-propagation window: the password response that
+            // issued this challenge reaches edge nodes asynchronously, and
+            // a 2FA submit that arrives too soon is answered with an empty
+            // 404 by an edge that does not know the challenge yet. The
+            // on-device evidence (v0.3.32: 2FA sent 8s after the password
+            // 200, still EDGE 404 on all retries) shows the window is
+            // longer than a user's code-entry time, so wait out the
+            // remaining propagation time before the first 2FA send.
+            if let issuedAt = challengeIssuedAt {
+                let elapsed = Date().timeIntervalSince(issuedAt)
+                let minimumWait: TimeInterval = 15
+                if elapsed < minimumWait {
+                    let remaining = UInt64((minimumWait - elapsed) * 1_000_000_000)
+                    Log.info(.auth, "waiting \(Int(minimumWait - elapsed))s for challenge propagation before 2FA submit")
+                    await sleep(remaining)
+                }
+            }
             progress?(.initializingSigner)
             signerGeneration += 1
             Log.info(.auth, "preparing fresh SAP signer for 2FA (signerGeneration=\(signerGeneration), same guid/machineID)")
@@ -539,6 +560,7 @@ public final class AuthenticationService: AuthenticationServicing, @unchecked Se
             if failureType == nil && customerMessage == "MZFinance.BadLogin.Configurator_message" {
                 if normalizedCode == nil {
                     challengeGuidHash = Self.shortHash(of: guid)
+                    challengeIssuedAt = Date()
                     Log.info(.auth, "account requires two-factor code")
                     return .twoFactorRequired
                 }

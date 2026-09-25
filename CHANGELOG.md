@@ -2,6 +2,25 @@
 
 All notable, user-visible changes are listed here. Dates are ISO 8601.
 
+## [0.3.33] - 2026-09-25
+
+### Changed
+
+- The 2FA submit now waits out the challenge-propagation window before
+  the first send: v0.3.32's on-device trace showed a 2FA request sent 8
+  seconds after the password response still answered with an empty EDGE
+  404 on every retry, while the identical fingerprint reached MZFinance
+  on the password stage. Apple edge nodes learn the challenge
+  asynchronously, so the submit waits until at least 15 seconds have
+  passed since the challenge was issued.
+
+### Fixed
+
+- The fingerprint log now records the User-Agent and Accept headers the
+  HTTP client actually attaches (previously it only showed what the auth
+  layer itself set, so it printed userAgentPresent=false / accept=nil
+  even though the wire request carried them).
+
 ## [0.3.32] - 2026-09-25
 
 ### Changed
