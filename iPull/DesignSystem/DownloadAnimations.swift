@@ -122,33 +122,56 @@ struct FlyingIconOverlay: View {
     private static let popDuration = 0.14
     private static let flyDuration = 0.72
 
+    private struct FrameState {
+        var point: CGPoint
+        var scale: CGFloat
+        var rotation: Double
+        var shadow: Double
+        var opacity: Double
+    }
+
+    private func frameState(at date: Date, in geo: GeometryProxy) -> FrameState {
+        let elapsed: Double = date.timeIntervalSince(startDate)
+        let pop: Double = min(max(elapsed / Self.popDuration, 0), 1)
+        let raw: Double = min(max((elapsed - Self.popDuration) / Self.flyDuration, 0), 1)
+        // Ease-in cubic: slow lift-off, accelerating into the tab.
+        let t = CGFloat(raw * raw * raw)
+        let u: CGFloat = 1 - t
+
+        let origin = geo.frame(in: .global).origin
+        let start = CGPoint(x: flight.from.midX - origin.x, y: flight.from.midY - origin.y)
+        let tabWidth: CGFloat = geo.size.width / CGFloat(tabCount)
+        let end = CGPoint(x: tabWidth * (CGFloat(tabIndex) + 0.5), y: geo.size.height - 26)
+        // Quadratic Bézier with the control point lifted above both ends, so
+        // the icon rises briefly before dropping into the tab.
+        let control = CGPoint(x: (start.x + end.x) / 2, y: min(start.y, end.y) - 140)
+        let a: CGFloat = u * u
+        let b: CGFloat = 2 * u * t
+        let c: CGFloat = t * t
+        let x: CGFloat = a * start.x + b * control.x + c * end.x
+        let y: CGFloat = a * start.y + b * control.y + c * end.y
+
+        let popScale = CGFloat(1 + 0.12 * sin(pop * Double.pi))
+        let fade: Double = t > 0.9 ? Double(u / 0.1) : 1
+        return FrameState(
+            point: CGPoint(x: x, y: y),
+            scale: popScale * (1 - 0.8 * t),
+            rotation: Double(t) * 220,
+            shadow: 0.25 * Double(u),
+            opacity: fade
+        )
+    }
+
     var body: some View {
         GeometryReader { geo in
             TimelineView(.animation) { context in
-                let elapsed = context.date.timeIntervalSince(startDate)
-                let pop = min(max(elapsed / Self.popDuration, 0), 1)
-                let raw = min(max((elapsed - Self.popDuration) / Self.flyDuration, 0), 1)
-                // Ease-in cubic: slow lift-off, accelerating into the tab.
-                let t = CGFloat(raw * raw * raw)
-
-                let origin = geo.frame(in: .global).origin
-                let start = CGPoint(x: flight.from.midX - origin.x, y: flight.from.midY - origin.y)
-                let end = CGPoint(x: geo.size.width * (CGFloat(tabIndex) + 0.5) / CGFloat(tabCount),
-                                  y: geo.size.height - 26)
-                // Quadratic Bézier with the control point lifted above both
-                // ends, so the icon rises briefly before dropping.
-                let control = CGPoint(x: (start.x + end.x) / 2, y: min(start.y, end.y) - 140)
-                let point = CGPoint(
-                    x: pow(1 - t, 2) * start.x + 2 * (1 - t) * t * control.x + t * t * end.x,
-                    y: pow(1 - t, 2) * start.y + 2 * (1 - t) * t * control.y + t * t * end.y
-                )
-
+                let frame = frameState(at: context.date, in: geo)
                 AppIconView(url: flight.iconURL, name: flight.name, size: flight.from.width)
-                    .scaleEffect((1 + 0.12 * sin(pop * .pi)) * (1 - 0.8 * t))
-                    .rotationEffect(.degrees(Double(t) * 220))
-                    .shadow(color: .black.opacity(0.25 * Double(1 - t)), radius: 14, y: 8)
-                    .opacity(t > 0.9 ? Double((1 - t) / 0.1) : 1)
-                    .position(point)
+                    .scaleEffect(frame.scale)
+                    .rotationEffect(.degrees(frame.rotation))
+                    .shadow(color: .black.opacity(frame.shadow), radius: 14, y: 8)
+                    .opacity(frame.opacity)
+                    .position(frame.point)
             }
         }
         .allowsHitTesting(false)
