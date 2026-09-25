@@ -283,12 +283,12 @@ final class AuthenticationServiceTests: XCTestCase {
         }
     }
 
-    func testTwoFactorEmpty404RetriesWithoutRotation() async throws {
+    func testTwoFactorEdge404RotatesIdentityAndResendsCode() async throws {
         let http = ScriptedHTTP()
-        // 2FA verify hits the transient 404 window, then succeeds on the
-        // same GUID without rotation.
+        // On-device (v0.3.38/v0.3.39): the edge refuses the challenge's
+        // GUID with an empty 404 on every 2FA send. The first refusal
+        // rotates the identity and resends the same code immediately.
         http.responses = [
-            HTTPResponse(statusCode: 404, headers: [:], data: Data()),
             HTTPResponse(statusCode: 404, headers: [:], data: Data()),
             HTTPResponse(statusCode: 200,
                 headers: ["X-Set-Apple-Store-Front": "143441-1,29"],
@@ -297,29 +297,37 @@ final class AuthenticationServiceTests: XCTestCase {
         let factory = RecordingSignerFactory()
         let secrets = InMemorySecretStore()
         try secrets.save(Data("AABBCCDDEEFF".utf8), for: DeviceIdentity.keychainKey)
+        let sleeps = Sleeps()
         let service = AuthenticationService(
             http: http,
             bagProvider: MockBag(),
             signerFactory: { id in try await factory.make(id) },
             secrets: secrets,
-            sleep: { _ in }
+            sleep: { ns in sleeps.record(ns) }
         )
 
         let result = try await service.signIn(email: "u@e.com", password: "pw", twoFactorCode: "123456")
-        guard case .success = result else { return XCTFail("Expected success after 404 retries") }
+        guard case .success = result else { return XCTFail("Expected success after identity rotation") }
 
-        // No rotation: every signer (this call builds a fresh one for the
-        // 2FA submit per the reference-flow diagnostic) uses the same GUID.
-        XCTAssertFalse(factory.hardwareIDs.isEmpty)
-        for id in factory.hardwareIDs {
-            XCTAssertEqual(id, Data([0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF]))
-        }
-        let stored = try XCTUnwrap(secrets.load(key: DeviceIdentity.keychainKey))
-        XCTAssertEqual(String(data: stored, encoding: .utf8), "AABBCCDDEEFF")
+        XCTAssertEqual(http.requestCount, 2)
+        XCTAssertTrue(sleeps.delaysNs.isEmpty, "rotation resends without backoff")
+        XCTAssertEqual(factory.hardwareIDs.count, 2)
+        guard factory.hardwareIDs.count == 2, http.bodies.count == 2 else { return }
+        XCTAssertEqual(factory.hardwareIDs[0], Data([0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF]))
+        let rotatedGUID = try XCTUnwrap(String(data: XCTUnwrap(secrets.load(key: DeviceIdentity.keychainKey)), encoding: .utf8))
+        XCTAssertNotEqual(rotatedGUID, "AABBCCDDEEFF")
+        XCTAssertEqual(factory.hardwareIDs[1], DeviceIdentity.machineID(forGUID: rotatedGUID))
+
+        // The resend carries the same password+code on the rotated guid.
+        let resend = try XCTUnwrap(PropertyListSerialization.propertyList(from: http.bodies[1], format: nil) as? [String: Any])
+        XCTAssertEqual(resend["password"] as? String, "pw123456")
+        XCTAssertEqual(resend["guid"] as? String, rotatedGUID)
     }
 
     func testTwoFactorEmpty404ExhaustedMapsToInvalidTwoFactorCode() async throws {
         let http = ScriptedHTTP()
+        // One edge refusal rotates; the rotated identity then 404s through
+        // its whole 3-send budget.
         http.responses = (0..<4).map { _ in
             HTTPResponse(statusCode: 404, headers: [:], data: Data())
         }
@@ -343,20 +351,17 @@ final class AuthenticationServiceTests: XCTestCase {
             XCTFail("Wrong error: \(error)")
         }
 
-        // No rotation attempted: all signers share the same hardware ID.
-        XCTAssertFalse(factory.hardwareIDs.isEmpty)
-        for id in factory.hardwareIDs {
-            XCTAssertEqual(id, Data([0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF]))
-        }
-        XCTAssertEqual(http.requestCount, 3)
+        // Exactly one rotation: the 2FA signer plus the rotated one.
+        XCTAssertEqual(factory.hardwareIDs.count, 2)
+        XCTAssertEqual(http.requestCount, 4)
     }
 
-    func testTwoFactor204And5xxRetryWithoutRotation() async throws {
+    func testTwoFactor5xxRetriesWithoutRotation() async throws {
         let http = ScriptedHTTP()
-        // A 204 and a bodyless 500 on the 2FA submit are transient, not a
-        // wrong code: retry on the same GUID/session, then succeed.
+        // Bodyless 5xx on the 2FA submit are transient, not a wrong code
+        // and not an edge GUID refusal: retry on the same GUID, then succeed.
         http.responses = [
-            HTTPResponse(statusCode: 204, headers: [:], data: Data()),
+            HTTPResponse(statusCode: 503, headers: [:], data: Data()),
             HTTPResponse(statusCode: 500, headers: [:], data: Data()),
             HTTPResponse(statusCode: 200,
                 headers: ["X-Set-Apple-Store-Front": "143441-1,29"],
@@ -382,10 +387,10 @@ final class AuthenticationServiceTests: XCTestCase {
         XCTAssertEqual(http.requestCount, 3)
     }
 
-    func testPasswordStage204RetriesThenSucceeds() async throws {
+    func testPasswordStage5xxRetriesThenSucceeds() async throws {
         let http = ScriptedHTTP()
         http.responses = [
-            HTTPResponse(statusCode: 204, headers: [:], data: Data()),
+            HTTPResponse(statusCode: 500, headers: [:], data: Data()),
             HTTPResponse(statusCode: 503, headers: [:], data: Data()),
             HTTPResponse(statusCode: 200,
                 headers: ["X-Set-Apple-Store-Front": "143441-1,29"],
@@ -412,7 +417,7 @@ final class AuthenticationServiceTests: XCTestCase {
         // 2FA submit 404s through the whole retry budget; the next sign-in
         // must start a fresh password flow (new signer, attempt "4") and
         // receive a fresh challenge instead of reusing the dead one.
-        http.responses = (0..<3).map { _ in
+        http.responses = (0..<4).map { _ in
             HTTPResponse(statusCode: 404, headers: [:], data: Data())
         } + [
             HTTPResponse(statusCode: 200, headers: [:],
@@ -436,9 +441,9 @@ final class AuthenticationServiceTests: XCTestCase {
 
         let next = try await service.signIn(email: "u@e.com", password: "pw", twoFactorCode: nil)
         XCTAssertEqual(next, .twoFactorRequired)
-        // A fresh signer was built for the restarted flow: the dead
-        // challenge's SAP session was discarded.
-        XCTAssertEqual(factory.hardwareIDs.count, 2)
+        // 2FA signer, its one rotation, then a fresh signer for the
+        // restarted flow: the dead challenge's SAP session was discarded.
+        XCTAssertEqual(factory.hardwareIDs.count, 3)
     }
 
     func testPodHeaderNeverBecomesRequestHost() async throws {
@@ -559,8 +564,10 @@ final class AuthenticationServiceTests: XCTestCase {
     final class ScriptedHTTP: HTTPClient, @unchecked Sendable {
         var responses: [HTTPResponse] = []
         var requestCount = 0
+        var bodies: [Data] = []
         func send(_ request: HTTPRequest, body: Data?) async throws -> HTTPResponse {
             requestCount += 1
+            if let body { bodies.append(body) }
             guard !responses.isEmpty else { throw AppStoreError.networkUnavailable }
             return responses.removeFirst()
         }
@@ -726,12 +733,9 @@ final class AuthenticationServiceTests: XCTestCase {
 
     func testPersistentEmpty404RotatesGUIDAndRetries() async throws {
         let http = ScriptedHTTP()
-        // Three empty 404s (the reference transport budget: initial + 2
-        // retries) exhaust the budget, then the rotated identity's request
-        // succeeds.
+        // The first empty 404 (edge refusal) rotates immediately; the
+        // rotated identity's request succeeds.
         http.responses = [
-            HTTPResponse(statusCode: 404, headers: [:], data: Data()),
-            HTTPResponse(statusCode: 404, headers: [:], data: Data()),
             HTTPResponse(statusCode: 404, headers: [:], data: Data()),
             HTTPResponse(statusCode: 200,
                 headers: ["X-Set-Apple-Store-Front": "143441-1,29"],
@@ -750,6 +754,7 @@ final class AuthenticationServiceTests: XCTestCase {
 
         let result = try await service.signIn(email: "u@e.com", password: "pw", twoFactorCode: nil)
         guard case .success = result else { return XCTFail("Expected success after GUID rotation") }
+        XCTAssertEqual(http.requestCount, 2)
 
         // The factory was asked for two signers: one for the stored GUID,
         // one for the rotated GUID.
@@ -793,9 +798,9 @@ final class AuthenticationServiceTests: XCTestCase {
             XCTFail("Wrong error: \(error)")
         }
 
-        // One rotation: two signers total, six requests (two sequences of
-        // the 3-send reference transport budget).
+        // One rotation: two signers total; one refused send, then the
+        // rotated identity's full 3-send budget.
         XCTAssertEqual(factory.hardwareIDs.count, 2)
-        XCTAssertEqual(http.requestCount, 6)
+        XCTAssertEqual(http.requestCount, 4)
     }
 }

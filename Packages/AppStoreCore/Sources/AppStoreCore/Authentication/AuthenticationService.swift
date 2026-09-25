@@ -51,9 +51,9 @@ public protocol AuthenticationServicing: Sendable {
 ///       → on 302 → follow pod redirect
 ///       → on 429 → bounded exponential backoff honoring Retry-After,
 ///         then rethrow .rateLimited
-///       → persistent empty 404 → rotate the device GUID once (Apple flags
-///         the identity server-side), retry with a fresh signer, then
-///         rethrow .networkUnavailable
+///       → empty edge 404/204 → rotate the device GUID once (the edge
+///         refuses a GUID after its first pass), resend with a fresh
+///         signer — on the 2FA submit too — then back off and rethrow
 ///       → success: dsPersonId + passwordToken + X-Set-Apple-Store-Front
 ///
 /// Passwords are never persisted; only the resulting session token goes to
@@ -144,10 +144,6 @@ public final class AuthenticationService: AuthenticationServicing, @unchecked Se
     /// Set when the password stage provably reached the MZFinance backend;
     /// used by the 2FA verdict line.
     private var passwordReachedMZFinance = false
-    /// When the current 2FA challenge was issued. Apple edge nodes need a
-    /// propagation window after the password response; a 2FA submit that
-    /// arrives inside that window is answered with an empty 404.
-    private var challengeIssuedAt: Date?
     /// Fingerprint fields of the most recent password-stage request, for
     /// the passwordVs2FAMatched comparison on the 2FA verdict line.
     private var passwordFingerprint: (headerNames: String, userAgentHash: String, contentType: String, host: String)?
@@ -223,23 +219,6 @@ public final class AuthenticationService: AuthenticationServicing, @unchecked Se
         // answer the 2FA submit with an empty 404 on-device; whether a
         // fresh signer changes that is exactly what this build measures.
         if normalizedCode != nil {
-            // Challenge-propagation window: the password response that
-            // issued this challenge reaches edge nodes asynchronously, and
-            // a 2FA submit that arrives too soon is answered with an empty
-            // 404 by an edge that does not know the challenge yet. The
-            // on-device evidence (v0.3.32: 2FA sent 8s after the password
-            // 200, still EDGE 404 on all retries) shows the window is
-            // longer than a user's code-entry time, so wait out the
-            // remaining propagation time before the first 2FA send.
-            if let issuedAt = challengeIssuedAt {
-                let elapsed = Date().timeIntervalSince(issuedAt)
-                let minimumWait: TimeInterval = 15
-                if elapsed < minimumWait {
-                    let remaining = UInt64((minimumWait - elapsed) * 1_000_000_000)
-                    Log.info(.auth, "waiting \(Int(minimumWait - elapsed))s for challenge propagation before 2FA submit")
-                    await sleep(remaining)
-                }
-            }
             progress?(.initializingSigner)
             signerGeneration += 1
             // Reference lifecycle: ipatool closes the password-stage SAP
@@ -458,6 +437,32 @@ public final class AuthenticationService: AuthenticationServicing, @unchecked Se
                 || response.statusCode == 429
                 || (response.statusCode == 404 && response.data.isEmpty)
                 || (response.statusCode >= 500 && response.statusCode < 600 && response.data.isEmpty)
+            // Edge refusal: an empty 404/204 that never reached MZFinance.
+            // On-device traces (v0.3.38/v0.3.39) show Apple's edge lets a
+            // GUID through exactly once — the fresh identity gets the 200
+            // challenge, and every later request on it, including the 2FA
+            // submit, is refused with an empty 404 however long we back
+            // off. The trusted-device code belongs to the account, not the
+            // GUID, so rotate right away (once per sign-in, either stage)
+            // and resend instead of burning the code's lifetime on retries
+            // the edge will never answer.
+            let isEdgeRefusal = (response.statusCode == 404 || response.statusCode == 204)
+                && response.data.isEmpty
+            if isEdgeRefusal && !didRotateGUID {
+                didRotateGUID = true
+                identityGeneration += 1
+                Log.info(.auth, "edge refused guid (HTTP \(response.statusCode), stage=\(stage)); rotating identity and resending (identityGeneration=\(identityGeneration))")
+                if let closing = signer as? SAPSessionClosing {
+                    await closing.closeSession()
+                }
+                let freshGUID = try DeviceIdentity.rotateGUID(secretStore: secrets)
+                guid = freshGUID
+                progress?(.initializingSigner)
+                signer = try await signerFactory(DeviceIdentity.machineID(forGUID: freshGUID))
+                rateLimitRetries = 0
+                logicalAttempt = 0
+                continue outer
+            }
             if isTransient {
                 let stage = normalizedCode == nil ? "password" : "2fa"
                 if rateLimitRetries < Self.maxRateLimitRetries {
@@ -475,14 +480,12 @@ public final class AuthenticationService: AuthenticationServicing, @unchecked Se
                 }
                 Log.error(.auth, "authenticate still HTTP \(response.statusCode) after \(rateLimitRetries) retries (stage=\(stage))")
                 if normalizedCode != nil {
-                    // The 2FA challenge is bound to this GUID and SAP
-                    // session; rotating here would break verification
-                    // (failureType 5020). A persistent transient on a 2FA
-                    // submit most likely means the code expired during the
-                    // retry window, so ask for a fresh one.
+                    // Past the edge-refusal rotation (if any), a persistent
+                    // transient most likely means the code expired during
+                    // the retry window, so ask for a fresh one.
                     logFailureDiagnostic(
                         stage: "2fa", lastStatus: response.statusCode, host: endpoint.host ?? "?",
-                        guid: guid, retries: rateLimitRetries, rotations: 0,
+                        guid: guid, retries: rateLimitRetries, rotations: didRotateGUID ? 1 : 0,
                         cause: "transient edge 404/204/5xx persisted through the retry budget on a 2FA submit; challenge discarded, next attempt starts a fresh password flow")
                     invalidateTwoFactorChallenge()
                     throw AppStoreError.invalidTwoFactorCode
@@ -576,7 +579,6 @@ public final class AuthenticationService: AuthenticationServicing, @unchecked Se
             if failureType == nil && customerMessage == "MZFinance.BadLogin.Configurator_message" {
                 if normalizedCode == nil {
                     challengeGuidHash = Self.shortHash(of: guid)
-                    challengeIssuedAt = Date()
                     Log.info(.auth, "account requires two-factor code")
                     return .twoFactorRequired
                 }
