@@ -43,7 +43,7 @@ struct SettingsView: View {
                     Text("Downloads")
                 } footer: {
                     Text(folderError ?? (folderName == nil
-                        ? "iPull asks where to save each IPA."
+                        ? "iPull asks where to save each IPA. Cancel the picker to keep it in iPull's Library (Files › On My iPhone › iPull)."
                         : "IPAs are written to this folder in Files."))
                 }
 
@@ -74,19 +74,20 @@ struct SettingsView: View {
                     Text("iPull downloads App Store packages for apps on your own Apple Account. It does not bypass DRM, sign, or install apps.")
                 }
             }
-            .fileImporter(isPresented: $choosingFolder, allowedContentTypes: [.folder]) { result in
-                switch result {
-                case .success(let folder):
+            .sheet(isPresented: $choosingFolder) {
+                FolderPicker { folder in
+                    choosingFolder = false
+                    guard let folder else { return }
                     do {
                         try SaveLocation.setDefaultFolder(folder)
                         folderName = SaveLocation.defaultFolderName ?? folder.lastPathComponent
                         folderError = nil
                     } catch {
+                        Log.error(.library, "saving the download folder failed: \(String(describing: type(of: error)))")
                         folderError = "That folder can't be used. Choose another one."
                     }
-                case .failure:
-                    break
                 }
+                .ignoresSafeArea()
             }
             .onAppear {
                 folderName = SaveLocation.defaultFolderName
@@ -131,7 +132,7 @@ struct SettingsView: View {
             Label("Signed in", systemImage: "checkmark.seal.fill")
                 .font(.caption).foregroundStyle(.green)
         case .unverified:
-            Label("Couldn't reach Apple to verify", systemImage: "wifi.exclamationmark")
+            Label("Not verified yet — download an app to confirm", systemImage: "questionmark.circle")
                 .font(.caption).foregroundStyle(.orange)
         case .idle:
             EmptyView()

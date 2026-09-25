@@ -162,31 +162,59 @@ public final class AppEnvironment: ObservableObject {
         Task { await signOut() }
     }
 
-    /// Once per launch, ask Apple whether the stored token still works. A
-    /// download-product lookup is the cheapest authenticated call that needs
-    /// no signing; for an app the account doesn't own Apple answers "license
-    /// not found", which still proves the token is valid. Network failures
-    /// leave the session alone.
+    /// Once per launch, ask Apple whether the stored token still works.
+    /// The probe is a download-product lookup for an app this account has
+    /// already downloaded: Apple answers it with the file when the token is
+    /// good and with "sign in required" (2042) when it is not. An app the
+    /// account doesn't own is useless as a probe — Apple answers "license
+    /// not found" (9610) before it checks the token, which is how the first
+    /// version of this check reported a dead session as valid.
     func verifySession() async {
         guard let session, sessionCheck == .idle else { return }
         sessionCheck = .checking
-        Log.info(.auth, "verifying stored session with Apple")
-        let probe = AppStoreApp(id: 361_309_726, bundleID: "com.apple.Pages", name: "Pages")
-        do {
-            _ = try await client.downloadMetadata.downloadMetadata(app: probe, session: session, externalVersionID: nil)
-            sessionCheck = .valid
-        } catch let error as AppStoreError where error.requiresReauthentication {
-            sessionCheck = .idle
-            handleServiceError(error)
-            return
-        } catch let error as AppStoreError where error == .appNotOwned {
-            sessionCheck = .valid
-        } catch {
-            sessionCheck = .unverified
-            Log.info(.auth, "session check inconclusive (\(String(describing: type(of: error))))")
-            return
+        let candidates = ownedAppIDs()
+        Log.info(.auth, "verifying stored session with Apple (\(candidates.count) owned app probes)")
+        for appID in candidates.prefix(3) {
+            let probe = AppStoreApp(id: appID, bundleID: "", name: "")
+            do {
+                _ = try await client.downloadMetadata.downloadMetadata(app: probe, session: session, externalVersionID: nil)
+                sessionCheck = .valid
+                Log.info(.auth, "stored session is valid")
+                return
+            } catch let error as AppStoreError where error.requiresReauthentication {
+                sessionCheck = .idle
+                handleServiceError(error)
+                return
+            } catch let error as AppStoreError where error == .appNotOwned {
+                continue // not a usable probe; try the next app
+            } catch {
+                break
+            }
         }
-        Log.info(.auth, "stored session is valid")
+        sessionCheck = .unverified
+        Log.info(.auth, "session check inconclusive")
+    }
+
+    private static let ownedAppsKey = "owned-app-ids"
+
+    /// Record an app Apple just served a download for, as a future probe.
+    /// Kept separately because a Library copy is optional.
+    public func rememberOwnedApp(_ appID: Int64) {
+        var ids = (UserDefaults.standard.array(forKey: Self.ownedAppsKey) as? [Int64]) ?? []
+        ids.removeAll { $0 == appID }
+        ids.insert(appID, at: 0)
+        UserDefaults.standard.set(Array(ids.prefix(10)), forKey: Self.ownedAppsKey)
+    }
+
+    /// App IDs this account has downloaded, newest first.
+    private func ownedAppIDs() -> [Int64] {
+        var ids = (UserDefaults.standard.array(forKey: Self.ownedAppsKey) as? [Int64]) ?? []
+        ids += downloadManager.records.filter { $0.state == .completed }.reversed().map(\.appID)
+        let context = ModelContext(modelContainer)
+        let descriptor = FetchDescriptor<LibraryItem>(sortBy: [SortDescriptor(\.downloadedAt, order: .reverse)])
+        ids += ((try? context.fetch(descriptor)) ?? []).map(\.appID)
+        var seen = Set<Int64>()
+        return ids.filter { seen.insert($0).inserted }
     }
 
     /// Fill in artwork for rows saved before icons were stored.

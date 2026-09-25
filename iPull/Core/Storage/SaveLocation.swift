@@ -65,3 +65,51 @@ enum SaveLocation {
         return target
     }
 }
+
+#if canImport(UIKit)
+import SwiftUI
+import UIKit
+import UniformTypeIdentifiers
+
+/// Files folder picker. UIKit's document picker is used directly because
+/// SwiftUI's `.fileImporter` never appeared for folders on device.
+struct FolderPicker: UIViewControllerRepresentable {
+    /// Called once with the chosen folder, or nil when cancelled.
+    let onPick: @MainActor (URL?) -> Void
+
+    func makeCoordinator() -> Coordinator { Coordinator(onPick: onPick) }
+
+    func makeUIViewController(context: Context) -> UIDocumentPickerViewController {
+        let picker = UIDocumentPickerViewController(forOpeningContentTypes: [.folder], asCopy: false)
+        picker.allowsMultipleSelection = false
+        picker.delegate = context.coordinator
+        return picker
+    }
+
+    func updateUIViewController(_ controller: UIDocumentPickerViewController, context: Context) {}
+
+    @MainActor
+    final class Coordinator: NSObject, UIDocumentPickerDelegate {
+        private let onPick: @MainActor (URL?) -> Void
+        private var finished = false
+
+        init(onPick: @escaping @MainActor (URL?) -> Void) {
+            self.onPick = onPick
+        }
+
+        func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
+            finish(urls.first)
+        }
+
+        func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
+            finish(nil)
+        }
+
+        private func finish(_ url: URL?) {
+            guard !finished else { return }
+            finished = true
+            onPick(url)
+        }
+    }
+}
+#endif
