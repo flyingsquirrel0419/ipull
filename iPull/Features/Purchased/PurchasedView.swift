@@ -71,7 +71,7 @@ final class PurchasedViewModel: ObservableObject {
         }
         state = .loading
         do {
-            let page = try await environment.client.ownedApps.ownedApps(session: session, page: 0, limit: 100)
+            let page = try await environment.client.ownedApps.ownedApps(session: session, page: 1, limit: 0)
             state = .loaded(page.apps)
         } catch is CancellationError {
             return

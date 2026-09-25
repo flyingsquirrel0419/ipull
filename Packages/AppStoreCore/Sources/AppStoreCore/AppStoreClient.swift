@@ -33,8 +33,6 @@ public final class AppStoreClient: Sendable {
         let guidProvider: @Sendable () throws -> String = {
             try DeviceIdentity.currentGUID(secretStore: secrets)
         }
-        let hardwareID = (try? DeviceIdentity.currentGUID(secretStore: secrets))
-            .map { DeviceIdentity.machineID(forGUID: $0) } ?? Data()
         let assets = SAPAssets(http: http) { assetProgress in
             switch assetProgress {
             case .downloading(let completed, let total):
@@ -50,15 +48,13 @@ public final class AppStoreClient: Sendable {
             EmulatedSAPSigner(http: http, bagProvider: bag,
                               assetProvider: assets, hardwareID: id, progress: progress)
         }
-        let signer = EmulatedSAPSigner(http: http, bagProvider: bag,
-                                       assetProvider: assets, hardwareID: hardwareID, progress: progress)
         return AppStoreClient(
             auth: AuthenticationService(http: http, bagProvider: bag, signerFactory: signerFactory, secrets: secrets, progress: progress),
             search: SearchService(http: http),
             versions: VersionService(http: http, bagProvider: bag, guidProvider: guidProvider),
             purchase: PurchaseService(http: http, bagProvider: bag, guidProvider: guidProvider),
             downloadMetadata: DownloadMetadataService(http: http, bagProvider: bag, guidProvider: guidProvider),
-            ownedApps: OwnedAppsService(http: http, signer: signer, guidProvider: guidProvider)
+            ownedApps: OwnedAppsService(http: http, signerFactory: signerFactory, guidProvider: guidProvider)
         )
     }
 }
