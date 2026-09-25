@@ -16,7 +16,6 @@ public enum AppGroup {
 public final class AppRouter: ObservableObject {
     public enum Route: Hashable {
         case appDetail(id: Int64)
-        case purchased
         case recents
     }
 

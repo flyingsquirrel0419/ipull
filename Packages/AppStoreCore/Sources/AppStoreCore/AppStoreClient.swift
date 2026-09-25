@@ -7,22 +7,19 @@ public final class AppStoreClient: Sendable {
     public let versions: any VersionServicing
     public let purchase: any PurchaseServicing
     public let downloadMetadata: any DownloadMetadataServicing
-    public let ownedApps: any OwnedAppsServicing
 
     public init(
         auth: any AuthenticationServicing,
         search: any SearchServicing,
         versions: any VersionServicing,
         purchase: any PurchaseServicing,
-        downloadMetadata: any DownloadMetadataServicing,
-        ownedApps: any OwnedAppsServicing
+        downloadMetadata: any DownloadMetadataServicing
     ) {
         self.auth = auth
         self.search = search
         self.versions = versions
         self.purchase = purchase
         self.downloadMetadata = downloadMetadata
-        self.ownedApps = ownedApps
     }
 
     /// Live wiring for the iOS app.
@@ -53,8 +50,7 @@ public final class AppStoreClient: Sendable {
             search: SearchService(http: http),
             versions: VersionService(http: http, bagProvider: bag, guidProvider: guidProvider),
             purchase: PurchaseService(http: http, bagProvider: bag, guidProvider: guidProvider),
-            downloadMetadata: DownloadMetadataService(http: http, bagProvider: bag, guidProvider: guidProvider),
-            ownedApps: OwnedAppsService(http: http, signerFactory: signerFactory, guidProvider: guidProvider)
+            downloadMetadata: DownloadMetadataService(http: http, bagProvider: bag, guidProvider: guidProvider)
         )
     }
 }

@@ -122,25 +122,25 @@ struct HomeView: View {
     // MARK: - Featured card
 
     private var featuredCard: some View {
-        NavigationLink(value: AppRouter.Route.purchased) {
+        Button { router.selectedTab = .library } label: {
             ZStack(alignment: .bottomLeading) {
                 LinearGradient(colors: [Color(red: 0.25, green: 0.36, blue: 0.95), Color(red: 0.55, green: 0.27, blue: 0.93)],
                                startPoint: .topLeading, endPoint: .bottomTrailing)
-                Image(systemName: "bag.fill")
+                Image(systemName: "square.stack.3d.up.fill")
                     .font(.system(size: 150, weight: .bold))
                     .foregroundStyle(.white.opacity(0.12))
                     .rotationEffect(.degrees(-12))
                     .offset(x: 170, y: -50)
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("YOUR APPLE ACCOUNT")
+                    Text("YOUR LIBRARY")
                         .font(.footnote.weight(.semibold))
                         .foregroundStyle(.white.opacity(0.75))
-                    Text("Purchased Apps")
+                    Text(libraryItems.isEmpty ? "Your First IPA" : "\(libraryItems.count) IPA\(libraryItems.count == 1 ? "" : "s") Ready")
                         .font(.title.weight(.bold))
                         .foregroundStyle(.white)
-                    Text(environment.session == nil
-                         ? "Sign in to browse everything you've downloaded."
-                         : "Every app you've ever downloaded, ready to pull.")
+                    Text(libraryItems.isEmpty
+                         ? "Search for an app or paste a link to download it."
+                         : "Share, verify or save them to Files anytime.")
                         .font(.subheadline)
                         .foregroundStyle(.white.opacity(0.85))
                 }
@@ -158,10 +158,11 @@ struct HomeView: View {
 
     private var tiles: some View {
         HStack(spacing: 12) {
-            tile(title: "Library", subtitle: libraryItems.isEmpty ? "No IPAs yet" : "\(libraryItems.count) IPA\(libraryItems.count == 1 ? "" : "s")",
-                 symbol: "square.stack.fill", tint: .orange) { router.selectedTab = .library }
             tile(title: "Downloads", subtitle: "Transfers", symbol: "arrow.down.circle.fill", tint: .green) {
                 router.selectedTab = .downloads
+            }
+            tile(title: "Settings", subtitle: "Save location", symbol: "gearshape.fill", tint: .gray) {
+                router.selectedTab = .settings
             }
         }
         .padding(.horizontal, 20)

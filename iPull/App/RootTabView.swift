@@ -63,7 +63,6 @@ struct RouteDestination: View {
     var body: some View {
         switch route {
         case .appDetail(let id): AppDetailView(appID: id)
-        case .purchased: PurchasedView()
         case .recents: RecentsView()
         }
     }
