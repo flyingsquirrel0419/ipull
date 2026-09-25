@@ -2,6 +2,18 @@
 
 All notable, user-visible changes are listed here. Dates are ISO 8601.
 
+## [0.3.38] - 2026-09-25
+
+### Fixed
+
+- The password-stage SAP session is now actually closed before the fresh
+  2FA signer is built. v0.3.36 added closeSession() but EmulatedSAPSigner
+  never declared the SAPSessionClosing conformance, so the as? cast
+  silently failed and the old session stayed open through the 2FA submit.
+  A v0.3.37 device trace confirmed the close log line never appeared.
+  Look for "closing password-stage SAP session before 2FA signer setup"
+  to prove the fix is active.
+
 ## [0.3.37] - 2026-09-25
 
 ### Changed

@@ -10,7 +10,7 @@ import Foundation
 ///   4. POST sign-sap-setup with the request → server reply
 ///   5. exchange(..., reply) → session established
 ///   6. sign(body) per request → X-Apple-ActionSignature
-public actor EmulatedSAPSigner: SAPSigning {
+public actor EmulatedSAPSigner: SAPSigning, SAPSessionClosing {
 
     public enum State: Sendable, Equatable {
         case idle
