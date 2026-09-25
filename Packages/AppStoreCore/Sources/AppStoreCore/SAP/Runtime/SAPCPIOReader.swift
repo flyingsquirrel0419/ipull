@@ -75,6 +75,10 @@ final class CPIOSelectiveExtractor {
 
     init(wanted: Set<String>) { self.wanted = wanted }
 
+    /// True once every wanted file has been fully read — the caller can
+    /// stop feeding the stream (ranged extraction never reaches TRAILER).
+    var allFound: Bool { files.count == wanted.count }
+
     func consume(_ chunk: Data) throws {
         var cursor = 0
         while cursor < chunk.count {

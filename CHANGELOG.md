@@ -2,6 +2,19 @@
 
 All notable, user-visible changes are listed here. Dates are ISO 8601.
 
+## [0.3.37] - 2026-09-25
+
+### Changed
+
+- First sign-in no longer downloads the full 1,217 MB Apple update
+  package. The four SAP frameworks live in a ~40 MB bzip2 region near
+  the end of the package (the same block-boundary offset ipatool uses),
+  so the app now issues one HTTP Range request for that window and
+  stream-decompresses it, stopping as soon as all four files are
+  extracted and digest-verified. First-login data use drops ~30x and the
+  mid-download network failures seen on-device (URLError -1005 during
+  the 1.2 GB pull) can no longer abort sign-in.
+
 ## [0.3.36] - 2026-09-25
 
 ### Changed

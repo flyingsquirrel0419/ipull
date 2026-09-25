@@ -1,4 +1,5 @@
 import Foundation
+import CBzip2
 
 /// Apple's SAP signing assets (Mach-O images) are downloaded at first use
 /// directly from Apple's software-update CDN — never bundled or
@@ -155,98 +156,127 @@ public final class SAPAssets: SAPAssetProviding, @unchecked Sendable {
         }
     }
 
-    // MARK: - Download + extraction
+    // MARK: - Ranged extraction
 
+    /// Absolute byte offset in the update package where the bzip2 stream
+    /// containing the four required frameworks begins (a bzip2 BLOCK magic
+    /// boundary, so the stream is decodable after prepending "BZh9").
+    /// Determined empirically against Apple's swcdn; matches ipatool's
+    /// payloadBZOffset (payload-relative 0x352F40D5 = heap 4287 + payload
+    /// offset 4175029 + 892289237).
+    static let assetStreamStart: Int64 = 896_468_553
+
+    /// Compressed bytes past assetStreamStart that contain all four
+    /// required files. Measured: CoreFP.icxs ends well within 32 MB
+    /// (decompressed ~65 MB); 40 MB adds a safety margin while staying
+    /// ~30x smaller than the full 1,217 MB package.
+    static let assetStreamLength: Int64 = 40 * 1_048_576
+
+    /// Bytes of decompressed CPIO to skip before the first full entry
+    /// (ipatool's payloadCPIO: tail of a partial entry preceding the
+    /// CommerceKit block).
+    static let cpioSkipBytes = 932
+
+    /// Download only the package region that holds the four assets and
+    /// stream-decompress it, instead of pulling the full 1,217 MB package.
+    /// First sign-in drops from ~1.2 GB to ~40 MB on the user's data plan.
     private func download() async throws -> SAPAssetBundle {
-        let tempURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent("ipull-sap-\(UUID().uuidString).pkg")
-        defer { try? FileManager.default.removeItem(at: tempURL) }
+        guard let streaming = http as? StreamingHTTPClient else {
+            throw SAPAssetsError.downloadFailed("ranged download requires a streaming HTTP client")
+        }
+        let start = Self.assetStreamStart
+        let end = start + Self.assetStreamLength - 1
+        let chunkURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ipull-sap-assets-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: chunkURL) }
 
-        // Parallel ranged download when the server supports it (swcdn does):
-        // probe the total size with a 1-byte range request, then fan out.
-        if let streaming = http as? StreamingHTTPClient {
-            var probe = HTTPRequest(url: Self.updateURL, headers: ["User-Agent": "iPull/1.0"])
-            probe.headers["Range"] = "bytes=0-0"
-            let probeURL = FileManager.default.temporaryDirectory
-                .appendingPathComponent("ipull-probe-\(UUID().uuidString)")
-            defer { try? FileManager.default.removeItem(at: probeURL) }
-            if let probeResponse = try? await streaming.download(probe, to: probeURL, progress: nil),
-               probeResponse.statusCode == 206,
-               let range = probeResponse.header("Content-Range"),
-               let totalString = range.split(separator: "/").last,
-               let total = Int64(totalString),
-               total > 0 {
-                Log.info(.auth, "SAP assets: parallel download, \(total / 1_048_576) MB total")
-                do {
-                    try await performParallelDownload(request: HTTPRequest(url: Self.updateURL, headers: ["User-Agent": "iPull/1.0"]),
-                                                      to: tempURL, totalSize: total)
-                    progress?(.extracting)
-                    return try extractFrom(packageURL: tempURL)
-                } catch SAPAssetsError.downloadFailed {
-                    Log.info(.auth, "range download unsupported; trying single stream")
-                } catch let error as SAPAssetsError {
-                    Log.error(.auth, "SAP asset extraction failed: \(error)")
-                    throw error
-                } catch {
-                    Log.error(.auth, "parallel download failed: \(String(describing: type(of: error)))")
-                    throw error
-                }
-            }
+        var request = HTTPRequest(url: Self.updateURL, headers: ["User-Agent": "iPull/1.0"])
+        request.headers["Range"] = "bytes=\(start)-\(end)"
+        Log.info(.auth, "SAP assets: ranged download, \(Self.assetStreamLength / 1_048_576) MB (of 1,217 MB package)")
+        let progress = self.progress
+        let response = try await streaming.download(request, to: chunkURL) { written, total in
+            progress?(.downloading(completedBytes: written, totalBytes: total ?? Self.assetStreamLength))
+        }
+        guard response.statusCode == 206 else {
+            throw SAPAssetsError.downloadFailed("range request answered HTTP \(response.statusCode)")
         }
 
-        // Fallback: single stream with retry + resume.
-        var lastError: Error?
-        for attempt in 1...3 {
-            var request = HTTPRequest(url: Self.updateURL, headers: ["User-Agent": "iPull/1.0"])
-            if let existing = try? FileManager.default.attributesOfItem(atPath: tempURL.path),
-               let size = existing[.size] as? Int64, size > 0 {
-                request.headers["Range"] = "bytes=\(size)-"
-                Log.info(.auth, "resuming SAP asset download from \(size / 1_048_576) MB (attempt \(attempt))")
-            }
-            do {
-                try await performDownload(request: request, to: tempURL)
-                lastError = nil
-                break
-            } catch {
-                lastError = error
-                Log.error(.auth, "SAP asset download attempt \(attempt) failed: \(String(describing: type(of: error)))")
-            }
-        }
-        if let lastError { throw lastError }
         progress?(.extracting)
-        return try extractFrom(packageURL: tempURL)
+        return try extractFromRangedStream(fileURL: chunkURL)
     }
 
-    /// One download attempt: stream to disk when supported, else buffered.
-    private func performDownload(request: HTTPRequest, to destination: URL) async throws {
-        if let streaming = http as? StreamingHTTPClient {
-            let progress = self.progress
-            let response = try await streaming.download(request, to: destination) { written, total in
-                let writtenMB = written / 1_048_576
-                if let total {
-                    Log.info(.auth, "SAP assets: \(writtenMB) MB / \(total / 1_048_576) MB")
-                    progress?(.downloading(completedBytes: written, totalBytes: total))
-                } else {
-                    Log.info(.auth, "SAP assets: \(writtenMB) MB")
+    /// Decompress the ranged bzip2 stream (block-boundary start, so the
+    /// "BZh9" stream magic is prepended) and pull the four wanted CPIO
+    /// entries. Stops feeding the decompressor once all four are extracted
+    /// — the trailing megabytes of the window are never decoded.
+    func extractFromRangedStream(fileURL: URL) throws -> SAPAssetBundle {
+        let input = try FileHandle(forReadingFrom: fileURL)
+        defer { try? input.close() }
+
+        guard let stream = cbzip2_stream_init() else { throw SAPAssetsError.downloadFailed("bzip2 init failed") }
+        defer { cbzip2_stream_end(stream) }
+
+        let extractor = CPIOSelectiveExtractor(wanted: Set(Self.requiredFiles.map(\.path)))
+        var remainingSkip = Self.cpioSkipBytes
+        let inChunkSize = 4 * 1_048_576
+        let outChunkSize = 16 * 1_048_576
+
+        // First chunk gets the bzip2 stream magic prepended: the window
+        // starts at a block boundary past the original "BZh9" bytes.
+        var first = true
+        while !extractor.allFound {
+            guard var chunk = try input.read(upToCount: inChunkSize), !chunk.isEmpty else { break }
+            if first {
+                chunk.insert(contentsOf: Data("BZh9".utf8), at: 0)
+                first = false
+            }
+            var offset = 0
+            while offset < chunk.count {
+                var consumed = 0
+                var outBuffer = Data(count: outChunkSize)
+                let slice = chunk.subdata(in: offset..<chunk.count)
+                let produced: Int = slice.withUnsafeBytes { inPtr in
+                    outBuffer.withUnsafeMutableBytes { outPtr in
+                        let r = cbzip2_stream_decompress(
+                            stream,
+                            inPtr.baseAddress?.assumingMemoryBound(to: UInt8.self), slice.count,
+                            &consumed,
+                            outPtr.baseAddress?.assumingMemoryBound(to: UInt8.self), outChunkSize
+                        )
+                        return r < 0 ? -1 : Int(r)
+                    }
                 }
-            }
-            guard response.statusCode == 200 || response.statusCode == 206 else {
-                throw SAPAssetsError.downloadFailed("HTTP \(response.statusCode)")
-            }
-        } else {
-            let response = try await http.send(request, body: nil)
-            guard response.statusCode == 200 || response.statusCode == 206 else {
-                throw SAPAssetsError.downloadFailed("HTTP \(response.statusCode)")
-            }
-            if FileManager.default.fileExists(atPath: destination.path),
-               let existing = try? Data(contentsOf: destination) {
-                var combined = existing
-                combined.append(response.data)
-                try combined.write(to: destination, options: .atomic)
-            } else {
-                try response.data.write(to: destination, options: .atomic)
+                guard produced >= 0 else { throw SAPAssetsError.downloadFailed("bzip2 stream corrupt") }
+                offset += consumed
+                if produced > 0 {
+                    var piece = outBuffer.prefix(produced)
+                    if remainingSkip > 0 {
+                        piece = piece.dropFirst(min(remainingSkip, piece.count))
+                        remainingSkip -= min(remainingSkip, piece.count)
+                    }
+                    if !piece.isEmpty { try extractor.consume(Data(piece)) }
+                }
+                if consumed == 0 && produced == 0 { break }
             }
         }
+
+        var found: [String: Data] = [:]
+        for spec in Self.requiredFiles {
+            guard let body = extractor.files[spec.path], body.count == spec.size else {
+                throw SAPAssetsError.missingFile(spec.name)
+            }
+            found[spec.name] = body
+        }
+
+        Log.info(.auth, "SAP assets extracted from ranged stream")
+        let bundle = SAPAssetBundle(
+            commerceKit: found["CommerceKit"]!,
+            commerceCore: found["CommerceCore"]!,
+            coreFP: found["CoreFP"]!,
+            coreFPICXS: found["CoreFP.icxs"]!
+        )
+        try Self.verify(bundle)
+        return bundle
     }
 
     /// Download small ranges so a stalled request can be retried without

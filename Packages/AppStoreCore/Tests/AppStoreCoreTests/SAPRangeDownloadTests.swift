@@ -2,6 +2,30 @@ import XCTest
 @testable import AppStoreCore
 
 final class SAPRangeDownloadTests: XCTestCase {
+
+    /// The ranged-extraction path must refuse a server that ignores Range:
+    /// answering 200 (full package) instead of 206 aborts instead of
+    /// silently downloading 1,217 MB.
+    func testRangedDownloadRequires206() async throws {
+        final class FullOnly: StreamingHTTPClient, @unchecked Sendable {
+            func send(_ request: HTTPRequest, body: Data?) async throws -> HTTPResponse {
+                throw AppStoreError.networkUnavailable
+            }
+            func download(_ request: HTTPRequest, to destination: URL,
+                          progress: (@Sendable (Int64, Int64?) -> Void)?) async throws -> HTTPResponse {
+                FileManager.default.createFile(atPath: destination.path, contents: Data([0x42, 0x5a]))
+                return HTTPResponse(statusCode: 200, headers: [:], data: Data())
+            }
+        }
+        let assets = SAPAssets(http: FullOnly(), cacheDirectory: FileManager.default.temporaryDirectory
+            .appendingPathComponent("ipull-test-\(UUID().uuidString)"))
+        do {
+            _ = try await assets.load()
+            XCTFail("expected failure when Range is ignored")
+        } catch SAPAssetsError.downloadFailed {
+            // expected
+        }
+    }
     final class RangeHTTP: StreamingHTTPClient, @unchecked Sendable {
         private let lock = NSLock()
         private var attempts: [String: Int] = [:]
