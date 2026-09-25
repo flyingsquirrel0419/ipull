@@ -690,6 +690,7 @@ public final class AuthenticationService: AuthenticationServicing, @unchecked Se
             // whether the password and 2FA stages share one Apple
             // transaction or the edge splits them.
             parts.append("requestUUID=\(response.header("x-apple-request-uuid") ?? "nil")")
+            parts.append("jingleCorrelationKey=\(response.header("x-apple-jingle-correlation-key") ?? "nil")")
             parts.append("jingleKeyPresent=\(response.header("x-apple-jingle-correlation-key") != nil)")
             parts.append("respondingInstancePresent=\(response.header("x-responding-instance") != nil)")
             parts.append("xDaiquiriInstancePresent=\(response.header("x-daiquiri-instance") != nil)")
