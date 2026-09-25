@@ -22,7 +22,7 @@ targets:
       path: iPull/Resources/Info.plist
       properties:
         CFBundleDisplayName: iPull
-        CFBundleShortVersionString: "0.4.3"
+        CFBundleShortVersionString: "0.4.4"
         CFBundleURLTypes:
           - CFBundleURLSchemes: [ipull]
         UILaunchScreen: {}

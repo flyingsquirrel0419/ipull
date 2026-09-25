@@ -38,14 +38,6 @@ struct AppDetailView: View {
             switch sheet {
             case .versions:
                 VersionsView(viewModel: viewModel)
-            case .folder:
-                // No save folder in Settings: ask where this IPA goes.
-                // Cancelling still downloads, into iPull's Library.
-                FolderPicker { folder in
-                    activeSheet = nil
-                    startDownload(to: folder.flatMap { try? SaveLocation.bookmark(for: $0) })
-                }
-                .ignoresSafeArea()
             }
         }
         // Re-run when the account changes so signing in from the account
@@ -145,7 +137,20 @@ struct AppDetailView: View {
         if let bookmark = SaveLocation.defaultBookmark {
             startDownload(to: bookmark)
         } else {
-            activeSheet = .folder
+            // No save folder in Settings: ask where this IPA goes.
+            // Cancelling still downloads, into iPull's Library.
+            FolderPicker.present { folder in
+                startDownload(to: folder.flatMap { Self.bookmark(for: $0) })
+            }
+        }
+    }
+
+    private static func bookmark(for folder: URL) -> Data? {
+        do {
+            return try SaveLocation.bookmark(for: folder)
+        } catch {
+            Log.error(.download, "bookmarking the chosen folder failed: \(String(describing: type(of: error)))")
+            return nil
         }
     }
 
@@ -268,7 +273,7 @@ struct AppDetailView: View {
 }
 
 enum DetailSheet: String, Identifiable {
-    case versions, folder
+    case versions
     var id: String { rawValue }
 }
 

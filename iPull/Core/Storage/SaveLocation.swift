@@ -67,48 +67,60 @@ enum SaveLocation {
 }
 
 #if canImport(UIKit)
-import SwiftUI
 import UIKit
 import UniformTypeIdentifiers
 
-/// Files folder picker. UIKit's document picker is used directly because
-/// SwiftUI's `.fileImporter` never appeared for folders on device.
-struct FolderPicker: UIViewControllerRepresentable {
-    /// Called once with the chosen folder, or nil when cancelled.
-    let onPick: @MainActor (URL?) -> Void
+/// Files folder picker, presented modally from the top view controller.
+/// Embedding the picker in a SwiftUI sheet (as a representable) showed it
+/// but left its Open button dead; the picker has to own its presentation.
+@MainActor
+enum FolderPicker {
+    /// Keeps the delegate alive while the picker is on screen.
+    private static var active: Delegate?
 
-    func makeCoordinator() -> Coordinator { Coordinator(onPick: onPick) }
-
-    func makeUIViewController(context: Context) -> UIDocumentPickerViewController {
+    /// Calls `onPick` once with the chosen folder, or nil when cancelled or
+    /// when nothing can present the picker.
+    static func present(onPick: @escaping @MainActor (URL?) -> Void) {
+        guard active == nil, let top = topViewController() else {
+            onPick(nil)
+            return
+        }
         let picker = UIDocumentPickerViewController(forOpeningContentTypes: [.folder], asCopy: false)
         picker.allowsMultipleSelection = false
-        picker.delegate = context.coordinator
-        return picker
+        picker.shouldShowFileExtensions = true
+        let delegate = Delegate { url in
+            active = nil
+            onPick(url)
+        }
+        active = delegate
+        picker.delegate = delegate
+        top.present(picker, animated: true)
     }
 
-    func updateUIViewController(_ controller: UIDocumentPickerViewController, context: Context) {}
+    private static func topViewController() -> UIViewController? {
+        let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+        let window = scenes.flatMap(\.windows).first { $0.isKeyWindow } ?? scenes.first?.windows.first
+        var top = window?.rootViewController
+        while let presented = top?.presentedViewController, !presented.isBeingDismissed {
+            top = presented
+        }
+        return top
+    }
 
     @MainActor
-    final class Coordinator: NSObject, UIDocumentPickerDelegate {
+    final class Delegate: NSObject, UIDocumentPickerDelegate {
         private let onPick: @MainActor (URL?) -> Void
-        private var finished = false
 
         init(onPick: @escaping @MainActor (URL?) -> Void) {
             self.onPick = onPick
         }
 
         func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
-            finish(urls.first)
+            onPick(urls.first)
         }
 
         func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
-            finish(nil)
-        }
-
-        private func finish(_ url: URL?) {
-            guard !finished else { return }
-            finished = true
-            onPick(url)
+            onPick(nil)
         }
     }
 }
