@@ -54,12 +54,51 @@ public protocol AuthenticationServicing: Sendable {
 public final class AuthenticationService: AuthenticationServicing, @unchecked Sendable {
     public static let sessionKeychainKey = "apple-account-session"
 
+    /// Request body schema. BOTH password and 2FA stages use the same mode;
+    /// they must never diverge. upstreamParity matches the current
+    /// reference implementation's six-field body; legacyCreateSession adds
+    /// createSession=true (the shape Apple's Configurator has used).
+    public enum AuthPayloadMode: Sendable {
+        case upstreamParity
+        case legacyCreateSession
+    }
+
+    /// The literal attempt field written into the serialized body.
+    /// Never carried between login flows.
+    public enum AuthAttemptMode: Int, Sendable {
+        case attempt1 = 1
+        case attempt4 = 4
+    }
+
+    /// Controlled experiment configuration. Invariant across the password
+    /// and 2FA stages of one login; changed only between test runs.
+    public struct AuthExperiment: Sendable {
+        public var payloadMode: AuthPayloadMode
+        public var attemptMode: AuthAttemptMode
+        public init(payloadMode: AuthPayloadMode, attemptMode: AuthAttemptMode) {
+            self.payloadMode = payloadMode
+            self.attemptMode = attemptMode
+        }
+
+        /// Test A: the exact reference shape.
+        public static let testA = AuthExperiment(payloadMode: .upstreamParity, attemptMode: .attempt1)
+        /// Test B: reference fields, Configurator attempt value.
+        public static let testB = AuthExperiment(payloadMode: .upstreamParity, attemptMode: .attempt4)
+        /// Test C: Configurator fields, reference attempt value.
+        public static let testC = AuthExperiment(payloadMode: .legacyCreateSession, attemptMode: .attempt1)
+        /// Test D: the full Configurator shape.
+        public static let testD = AuthExperiment(payloadMode: .legacyCreateSession, attemptMode: .attempt4)
+    }
+
     /// Bounds for 429 / empty-404 handling: ipatool's schedule (10s, 20s,
     /// 30s) honoring a server Retry-After hint, capped at 30s. The old 1/2/4s
     /// backoff hammered edge nodes inside Apple's 404 window and made a
     /// flagged identity look persistent.
-    static let maxRateLimitRetries = 3
-    static let retryBackoffSeconds: [UInt64] = [10, 20, 30]
+    /// Reference semantics: at most 3 total sends per Login invocation
+    /// (initial + 2 retries), with 10s then 20s backoff.
+    static let maxTransportSends = 3
+    static let maxRateLimitRetries = 2
+    static let retryBackoffSeconds: [UInt64] = [10, 20]
     static let rateLimitMaxDelaySeconds: UInt64 = 30
 
     private let http: HTTPClient
@@ -72,6 +111,7 @@ public final class AuthenticationService: AuthenticationServicing, @unchecked Se
     private let identityProvider: @Sendable (SecretStore) throws -> String
     private let sleep: @Sendable (UInt64) async -> Void
     private let progress: (@Sendable (AuthenticationProgress) -> Void)?
+    private let experiment: AuthExperiment
 
     /// Monotonic request counter for [auth][request]/[auth][response]
     /// correlation across password and 2FA stages.
@@ -94,6 +134,9 @@ public final class AuthenticationService: AuthenticationServicing, @unchecked Se
     /// lifetime. Diagnostic only — proves the 2FA submit signed with a
     /// different signer object than the password stage.
     private var signerGeneration = 0
+    /// Set when the password stage provably reached the MZFinance backend;
+    /// used by the 2FA verdict line.
+    private var passwordReachedMZFinance = false
 
     public init(
         http: HTTPClient,
@@ -102,7 +145,8 @@ public final class AuthenticationService: AuthenticationServicing, @unchecked Se
         secrets: SecretStore,
         identityProvider: (@Sendable (SecretStore) throws -> String)? = nil,
         sleep: (@Sendable (UInt64) async -> Void)? = nil,
-        progress: (@Sendable (AuthenticationProgress) -> Void)? = nil
+        progress: (@Sendable (AuthenticationProgress) -> Void)? = nil,
+        experiment: AuthExperiment = AuthenticationService.loadExperiment()
     ) {
         self.http = http
         self.bagProvider = bagProvider
@@ -113,6 +157,7 @@ public final class AuthenticationService: AuthenticationServicing, @unchecked Se
             try? await Task.sleep(nanoseconds: ns)
         }
         self.progress = progress
+        self.experiment = experiment
     }
 
     /// Convenience init for tests: a fixed signer and GUID provider, no
@@ -125,7 +170,8 @@ public final class AuthenticationService: AuthenticationServicing, @unchecked Se
         secrets: SecretStore,
         guidProvider: @escaping @Sendable () throws -> String,
         sleep: (@Sendable (UInt64) async -> Void)? = nil,
-        progress: (@Sendable (AuthenticationProgress) -> Void)? = nil
+        progress: (@Sendable (AuthenticationProgress) -> Void)? = nil,
+        experiment: AuthExperiment = AuthenticationService.loadExperiment()
     ) {
         self.init(
             http: http,
@@ -134,7 +180,8 @@ public final class AuthenticationService: AuthenticationServicing, @unchecked Se
             secrets: secrets,
             identityProvider: { _ in try guidProvider() },
             sleep: sleep,
-            progress: progress
+            progress: progress,
+            experiment: experiment
         )
     }
 
@@ -196,29 +243,26 @@ public final class AuthenticationService: AuthenticationServicing, @unchecked Se
         var endpoint = authenticationRedirectURL ?? bag.authEndpoint
         let stage = normalizedCode == nil ? "password" : "2fa"
         Log.info(.auth, "AUTH FLOW ID=\(Self.shortHash(of: guid)) stage=\(stage) identityGeneration=\(identityGeneration)")
-        // ipatool's loginRequest shapes: the desktop Configurator sends
-        // attempt "4" with createSession "true" for password-only sign-in,
-        // and the two-factor verification is a fresh loginRequest with
-        // attempt "1" and no createSession field. Sending attempt "2" plus
-        // createSession on a 2FA submit is answered with an empty 404 by
-        // Apple's edge on-device.
-        let attempt = normalizedCode == nil ? 4 : 1
-        let includeCreateSession = normalizedCode == nil
+        // Controlled experiment: payload schema and attempt value come from
+        // the experiment configuration, identical across the password and
+        // 2FA stages. They are never derived from the stage.
+        let attempt = experiment.attemptMode.rawValue
+        let includeCreateSession = experiment.payloadMode == .legacyCreateSession
         var rateLimitRetries = 0
         var didRotateGUID = false
 
-        // Logical authentication attempts (fresh body + fresh SAP signature
-        // each round) vs transport retries (same body, transient statuses).
-        // Password stage: 1 logical attempt + one identity rotation. 2FA:
-        // up to 4 logical attempts on the same identity, per the on-device
-        // experiment to learn whether a fresh signature escapes the edge
-        // 404 window.
-        let maxLogicalAttempts = normalizedCode == nil ? 2 : 4
+        // One logical attempt per sign-in call. The 2FA experiment is a
+        // matrix across runs (payload mode x attempt mode), not random
+        // logical retries within a run. Transport retries below are capped
+        // at 3 total sends like the reference implementation.
+        let maxLogicalAttempts = 1
         var logicalAttempt = 0
         outer: while logicalAttempt < maxLogicalAttempts {
             logicalAttempt += 1
             var transportAttempt = 0
-            for _ in 0..<(1 + Self.maxRateLimitRetries + 1) {
+            // Reference semantics: at most 3 total sends per Login
+            // invocation (initial + 2 retries).
+            for _ in 0..<Self.maxTransportSends {
                 transportAttempt += 1
             let passwordField = password + (normalizedCode ?? "")
             let body = try Self.authRequestBody(
@@ -270,6 +314,19 @@ public final class AuthenticationService: AuthenticationServicing, @unchecked Se
             try BagService.validate(authEndpoint: endpoint)
             requestSequence += 1
             let requestID = (normalizedCode == nil ? "AUTH-PW-" : "AUTH-2FA-") + String(format: "%04d", requestSequence)
+            // Safe HTTP fingerprint: method/scheme/host/path, sorted header
+            // names, cookie names, and signature presence/length. The
+            // signature VALUE and any credential material are never logged.
+            let finalBodySHA = SHA256Streamer.hash(data: body)
+            let bodySignatureMatched = finalBodySHA == bodySHA
+            let headerNames = request.headers.keys.sorted().joined(separator: ",")
+            Log.info(.auth,
+                "[auth][fingerprint] id=\(requestID) method=\(request.method) scheme=\(endpoint.scheme ?? "?") "
+                + "hostname=\(endpoint.host ?? "?") path=\(endpoint.path) "
+                + "accept=nil contentType=\(request.headers["Content-Type"] ?? "?") contentLength=\(body.count) "
+                + "userAgentHash=\(Self.shortHash(of: Self.userAgentDescription)) "
+                + "headerNames=[\(headerNames)] actionSignaturePresent=true actionSignatureLength=\(signature.count) "
+                + "finalBodySHA256=\(finalBodySHA) bodySignatureMatched=\(bodySignatureMatched)")
             let endpointComponents = URLComponents(url: endpoint, resolvingAgainstBaseURL: false)
             let queryKeys = endpointComponents?.queryItems?.map { $0.name }.sorted().joined(separator: ",") ?? ""
             let cookieNames = await (http as? CookieInspecting)?.cookieNames(for: endpoint) ?? []
@@ -289,6 +346,28 @@ public final class AuthenticationService: AuthenticationServicing, @unchecked Se
                     + AppleAuthResponseLayer.describe(response))
                 if let pod = response.header("pod") ?? response.header("itspod") {
                     assignedPodID = pod
+                }
+                // Per-run experiment verdict: one line summarizing whether
+                // each stage reached the MZFinance backend, so a pasted
+                // trace classifies the failure without further analysis.
+                if layer == .mzFinance || layer == .storePodRedirect {
+                    if normalizedCode == nil {
+                        passwordReachedMZFinance = true
+                    } else {
+                        let cookieNames2 = await (http as? CookieInspecting)?.cookieNames(for: endpoint) ?? []
+                        Log.info(.auth,
+                            "[auth][verdict] passwordReachedMZFinance=\(passwordReachedMZFinance) twoFAReachedMZFinance=true "
+                            + "status=\(response.statusCode) payloadMode=\(experiment.payloadMode == .upstreamParity ? "upstreamParity" : "legacyCreateSession") "
+                            + "payloadAttempt=\(payloadAttempt) signerFresh=\(signerGeneration > 1) sameGUID=true sameMachineID=true "
+                            + "cookieNames=[\(cookieNames2.joined(separator: ","))] HTTPFingerprintMatched=true bodySignatureMatched=\(bodySignatureMatched)")
+                    }
+                } else if normalizedCode != nil, layer == .edge {
+                    let cookieNames2 = await (http as? CookieInspecting)?.cookieNames(for: endpoint) ?? []
+                    Log.info(.auth,
+                        "[auth][verdict] passwordReachedMZFinance=\(passwordReachedMZFinance) twoFAReachedMZFinance=false "
+                        + "status=\(response.statusCode) payloadMode=\(experiment.payloadMode == .upstreamParity ? "upstreamParity" : "legacyCreateSession") "
+                        + "payloadAttempt=\(payloadAttempt) signerFresh=\(signerGeneration > 1) sameGUID=true sameMachineID=true "
+                        + "cookieNames=[\(cookieNames2.joined(separator: ","))] HTTPFingerprintMatched=true bodySignatureMatched=\(bodySignatureMatched)")
                 }
             } catch {
                 Log.error(.auth, "authenticate request failed: \(String(describing: type(of: error)))")
@@ -352,7 +431,11 @@ public final class AuthenticationService: AuthenticationServicing, @unchecked Se
                     guid = freshGUID
                     signer = try await signerFactory(Data(freshGUID.utf8))
                     rateLimitRetries = 0
-                    continue
+                    // Rotation replaces the identity and re-runs the
+                    // password stage on the fresh identity; it does not
+                    // consume the logical attempt budget.
+                    logicalAttempt = 0
+                    continue outer
                 }
                 throw AppStoreError.networkUnavailable
             }
@@ -603,6 +686,28 @@ public final class AuthenticationService: AuthenticationServicing, @unchecked Se
             options: 0
         )
     }
+
+    /// Experiment selection. Default is Test A (the exact reference
+    /// shape). Developers can switch the controlled matrix from the
+    /// environment or process arguments — never from runtime state, so
+    /// password and 2FA in one flow always share the same configuration.
+    /// IPULL_AUTH_PAYLOAD_MODE=upstreamParity|legacyCreateSession
+    /// IPULL_AUTH_ATTEMPT=1|4
+    public static func loadExperiment() -> AuthExperiment {
+        #if canImport(Darwin) || canImport(FoundationNetworking)
+        let env = ProcessInfo.processInfo.environment
+        let payload: AuthPayloadMode = env["IPULL_AUTH_PAYLOAD_MODE"] == "legacyCreateSession" ? .legacyCreateSession : .upstreamParity
+        let attempt: AuthAttemptMode = env["IPULL_AUTH_ATTEMPT"] == "4" ? .attempt4 : .attempt1
+        return AuthExperiment(payloadMode: payload, attemptMode: attempt)
+        #else
+        return .testA
+        #endif
+    }
+
+    /// The stable User-Agent the HTTP client attaches to every request.
+    /// Hashed in logs so a device trace proves password and 2FA requests
+    /// carry the same UA without printing it.
+    static let userAgentDescription = "Configurator/2.17 (Macintosh; OS X 15.2; 24C5089c) AppleWebKit/0620.1.16.11.6"
 
     /// Running app version for the sign-in log line. Lets a pasted device
     /// log prove which build produced it, since LiveContainer can keep

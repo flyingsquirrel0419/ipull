@@ -2,6 +2,38 @@
 
 All notable, user-visible changes are listed here. Dates are ISO 8601.
 
+## [0.3.31] - 2026-09-25
+
+### Changed
+
+- The v0.3.30 experiment proved a fresh SAP signer does not fix the 2FA
+  404, so this build runs an exact request-parity experiment instead:
+  one request builder shared by both stages, with the payload schema
+  (AuthPayloadMode: upstreamParity vs legacyCreateSession) and attempt
+  field (AuthAttemptMode: 1 vs 4) driven by a single AuthExperiment
+  configuration — identical across the password and 2FA stages of a
+  flow, switchable between runs via IPULL_AUTH_PAYLOAD_MODE /
+  IPULL_AUTH_ATTEMPT (default Test A: upstreamParity + attempt 1).
+- Transport retries now match the reference semantics: at most 3 total
+  sends per sign-in (initial + 2 retries, 10s/20s backoff). Logical
+  retries that re-signed with increasing attempt values were removed —
+  a 404 is a pre-auth transport failure, not a reason to bump attempt.
+
+### Added
+
+- Safe HTTP fingerprint per request: method, scheme, hostname, path,
+  content type, content length, sorted header names, cookie names,
+  User-Agent hash, actionSignature presence/length, payloadAttempt and
+  payloadFieldNames read back from the serialized body, and
+  finalBodySHA256 with bodySignatureMatched proof that the exact bytes
+  handed to URLSession are the bytes the SAP signer signed.
+- A per-run [auth][verdict] line: passwordReachedMZFinance,
+  twoFAReachedMZFinance, status, payloadMode, payloadAttempt,
+  signerFresh, sameGUID/sameMachineID, cookieNames, and
+  bodySignatureMatched. If a 2FA variant ends in an EDGE 404 with all
+  parity checks true, the trace supports the
+  LEGACY_MZFINANCE_2FA_EDGE_REJECTED verdict.
+
 ## [0.3.30] - 2026-09-25
 
 ### Changed

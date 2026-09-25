@@ -89,10 +89,10 @@ final class AuthenticationFlowTests: XCTestCase {
         XCTAssertEqual(plist["password"] as? String, "pw")
         XCTAssertEqual(plist["guid"] as? String, "AABBCCDDEEFF")
         XCTAssertEqual(plist["why"] as? String, "signIn")
-        // Desktop-client values: attempt "4" for password-only sign-in with
-        // createSession "true" (createSession is omitted on 2FA submits).
-        XCTAssertEqual(plist["attempt"] as? String, "4")
-        XCTAssertEqual(plist["createSession"] as? String, "true")
+        // Experiment default (Test A): the upstream reference shape —
+        // attempt "1", no createSession, identical across both stages.
+        XCTAssertEqual(plist["attempt"] as? String, "1")
+        XCTAssertNil(plist["createSession"])
     }
 
     final class StubSigner: SAPSigning, @unchecked Sendable {

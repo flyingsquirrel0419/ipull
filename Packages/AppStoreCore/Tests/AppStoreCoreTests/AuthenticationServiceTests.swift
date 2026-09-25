@@ -178,6 +178,60 @@ final class AuthenticationServiceTests: XCTestCase {
         XCTAssertNil(bodyPlist["createSession"])
     }
 
+    /// The controlled experiment matrix: password and 2FA in one flow must
+    /// share the same payload schema and attempt value; the four
+    /// combinations are selected only via AuthExperiment.
+    func testExperimentMatrixProducesIdenticalSchemaAcrossStages() async throws {
+        final class BodyCapture: SAPSigning, @unchecked Sendable {
+            private(set) var bodies: [Data] = []
+            func sign(body: Data) async throws -> String {
+                bodies.append(body)
+                return "SAP-200:test"
+            }
+        }
+        let experiments: [(AuthenticationService.AuthExperiment, String, Bool)] = [
+            (.testA, "1", false),
+            (.testB, "4", false),
+            (.testC, "1", true),
+            (.testD, "4", true),
+        ]
+        for (experiment, expectedAttempt, expectsCreateSession) in experiments {
+            let http = MockHTTP()
+            http.responses = [
+                HTTPResponse(statusCode: 200, headers: [:],
+                    data: plist(["customerMessage": "MZFinance.BadLogin.Configurator_message"])),
+                HTTPResponse(statusCode: 200,
+                    headers: ["X-Set-Apple-Store-Front": "143441-1,29"],
+                    data: plist(["dsPersonId": "1", "passwordToken": "tok"])),
+            ]
+            let signer = BodyCapture()
+            let service = AuthenticationService(
+                http: http, bagProvider: MockBag(), signer: signer,
+                secrets: InMemorySecretStore(), guidProvider: { "AABBCCDDEEFF" },
+                experiment: experiment
+            )
+            _ = try await service.signIn(email: "u@e.com", password: "pw", twoFactorCode: nil)
+            _ = try await service.signIn(email: "u@e.com", password: "pw", twoFactorCode: "123456")
+
+            // Both stages signed exactly one body each, with identical
+            // schema: same attempt field, same createSession presence.
+            XCTAssertEqual(signer.bodies.count, 2)
+            guard signer.bodies.count == 2 else { continue }
+            let passwordPlist = try XCTUnwrap(
+                PropertyListSerialization.propertyList(from: signer.bodies[0], format: nil) as? [String: Any])
+            let twoFAPlist = try XCTUnwrap(
+                PropertyListSerialization.propertyList(from: signer.bodies[1], format: nil) as? [String: Any])
+            XCTAssertEqual(passwordPlist["attempt"] as? String, expectedAttempt)
+            XCTAssertEqual(twoFAPlist["attempt"] as? String, expectedAttempt)
+            XCTAssertEqual(passwordPlist["createSession"] != nil, expectsCreateSession)
+            XCTAssertEqual(twoFAPlist["createSession"] != nil, expectsCreateSession)
+            // The only payload difference between the stages is the
+            // password field contents (code appended).
+            XCTAssertEqual(passwordPlist["password"] as? String, "pw")
+            XCTAssertEqual(twoFAPlist["password"] as? String, "pw123456")
+        }
+    }
+
     func testTwoFactorSubmissionUsesFreshSignerOnSameIdentity() async throws {
         let http = ScriptedHTTP()
         http.responses = [
@@ -294,7 +348,7 @@ final class AuthenticationServiceTests: XCTestCase {
         for id in factory.hardwareIDs {
             XCTAssertEqual(id, Data("AABBCCDDEEFF".utf8))
         }
-        XCTAssertEqual(http.requestCount, 4)
+        XCTAssertEqual(http.requestCount, 3)
     }
 
     func testTwoFactor204And5xxRetryWithoutRotation() async throws {
@@ -358,7 +412,7 @@ final class AuthenticationServiceTests: XCTestCase {
         // 2FA submit 404s through the whole retry budget; the next sign-in
         // must start a fresh password flow (new signer, attempt "4") and
         // receive a fresh challenge instead of reusing the dead one.
-        http.responses = (0..<4).map { _ in
+        http.responses = (0..<3).map { _ in
             HTTPResponse(statusCode: 404, headers: [:], data: Data())
         } + [
             HTTPResponse(statusCode: 200, headers: [:],
@@ -672,10 +726,10 @@ final class AuthenticationServiceTests: XCTestCase {
 
     func testPersistentEmpty404RotatesGUIDAndRetries() async throws {
         let http = ScriptedHTTP()
-        // Four empty 404s (initial + 3 retries) exhaust the retry budget,
-        // then the rotated identity's request succeeds.
+        // Three empty 404s (the reference transport budget: initial + 2
+        // retries) exhaust the budget, then the rotated identity's request
+        // succeeds.
         http.responses = [
-            HTTPResponse(statusCode: 404, headers: [:], data: Data()),
             HTTPResponse(statusCode: 404, headers: [:], data: Data()),
             HTTPResponse(statusCode: 404, headers: [:], data: Data()),
             HTTPResponse(statusCode: 404, headers: [:], data: Data()),
@@ -715,7 +769,7 @@ final class AuthenticationServiceTests: XCTestCase {
         let http = ScriptedHTTP()
         // Rotation happens once per sign-in; continued 404s after the
         // rotated identity also exhausts its retries must throw.
-        http.responses = (0..<12).map { _ in
+        http.responses = (0..<6).map { _ in
             HTTPResponse(statusCode: 404, headers: [:], data: Data())
         }
         let secrets = InMemorySecretStore()
@@ -738,9 +792,9 @@ final class AuthenticationServiceTests: XCTestCase {
             XCTFail("Wrong error: \(error)")
         }
 
-        // One rotation: two signers total, eight requests (two retry
-        // sequences of four).
+        // One rotation: two signers total, six requests (two sequences of
+        // the 3-send reference transport budget).
         XCTAssertEqual(factory.hardwareIDs.count, 2)
-        XCTAssertEqual(http.requestCount, 8)
+        XCTAssertEqual(http.requestCount, 6)
     }
 }
