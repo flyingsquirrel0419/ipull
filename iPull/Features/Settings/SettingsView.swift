@@ -1,9 +1,11 @@
 import SwiftUI
 import AppStoreCore
 
-/// The account sheet, modelled on the App Store's: a profile card on top,
-/// then storage, diagnostics and about.
+/// Settings, shown both as the Settings tab and as the App Store-style
+/// account sheet: a profile card on top, then storage, diagnostics, about.
 struct SettingsView: View {
+    var presentedAsSheet = true
+
     @EnvironmentObject private var environment: AppEnvironment
     @Environment(\.dismiss) private var dismiss
 
@@ -41,11 +43,13 @@ struct SettingsView: View {
                     Text("iPull downloads App Store packages for apps on your own Apple Account. It does not bypass DRM, sign, or install apps.")
                 }
             }
-            .navigationTitle("Account")
-            .navigationBarTitleDisplayMode(.inline)
+            .navigationTitle(presentedAsSheet ? "Account" : "Settings")
+            .navigationBarTitleDisplayMode(presentedAsSheet ? .inline : .large)
             .toolbar {
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Done") { dismiss() }.fontWeight(.semibold)
+                if presentedAsSheet {
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button("Done") { dismiss() }.fontWeight(.semibold)
+                    }
                 }
             }
         }

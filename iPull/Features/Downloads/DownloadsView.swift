@@ -36,7 +36,7 @@ struct DownloadsView: View {
 
     private func row(_ record: DownloadRecord) -> some View {
         HStack(spacing: 14) {
-            AppIconView(url: nil, name: record.appName, size: 48)
+            AppIconView(url: record.iconURL, name: record.appName, size: 48)
             VStack(alignment: .leading, spacing: 3) {
                 Text(record.appName).font(.body.weight(.semibold)).lineLimit(1)
                 subtitle(record)

@@ -112,6 +112,7 @@ public enum DownloadProductRequest {
             ]
         )
         let response = try await http.send(request, body: body)
+        Log.info(.download, "downloadProduct \(url.host ?? "?")\(url.path) -> HTTP \(response.statusCode), \(response.data.count) bytes")
 
         // An empty 500 means "try the next endpoint" per observed behavior.
         if response.statusCode == 500 && response.data.isEmpty { return nil }
@@ -134,6 +135,7 @@ public enum DownloadProductRequest {
             .flatMap { $0.isEmpty ? nil : $0 }
         let items = plist["songList"] as? [[String: Any]] ?? plist["items"] as? [[String: Any]] ?? []
 
+        Log.info(.download, "downloadProduct result: failureType=\(failureType ?? "<none>") songs=\(items.count) message=\(customerMessage == nil ? "none" : "present")")
         switch failureType {
         case "2034", "2042", "1008", "5002":
             throw AppStoreError.sessionExpired

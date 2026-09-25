@@ -32,6 +32,15 @@ struct HomeView: View {
             }
             .scrollDismissesKeyboard(.interactively)
             .toolbar(.hidden, for: .navigationBar)
+            .task {
+                RecentApp.removeDuplicates(in: modelContext)
+                for recent in recents.uniqueByApp where recent.iconURLString == nil {
+                    if let url = await environment.iconURL(forAppID: recent.appID) {
+                        recent.iconURLString = url.absoluteString
+                    }
+                }
+                try? modelContext.save()
+            }
             .navigationDestination(for: AppRouter.Route.self) { RouteDestination(route: $0) }
             .confirmationDialog("Clear Recently Viewed?", isPresented: $confirmClear, titleVisibility: .visible) {
                 Button("Clear All", role: .destructive) { clearRecents() }
@@ -196,13 +205,12 @@ struct HomeView: View {
             .padding(.horizontal, 20)
 
             ScrollView(.horizontal, showsIndicators: false) {
-                LazyHGrid(rows: Array(repeating: GridItem(.fixed(80), spacing: 0), count: min(3, recents.count)),
+                LazyHGrid(rows: Array(repeating: GridItem(.fixed(80), spacing: 0), count: min(3, shelf.count)),
                           spacing: 16) {
-                    ForEach(Array(recents.prefix(12).enumerated()), id: \.element.persistentModelID) { index, recent in
+                    ForEach(Array(shelf.enumerated()), id: \.element.persistentModelID) { index, recent in
                         VStack(spacing: 0) {
                             Button { router.homePath.append(.appDetail(id: recent.appID)) } label: {
-                                AppRow(iconURL: recent.iconURL, name: recent.name,
-                                       subtitle: recent.developerName ?? recent.bundleID) { Text("View") }
+                                ShelfRow(recent: recent)
                             }
                             .buttonStyle(.plain)
                             .contextMenu {
@@ -210,7 +218,7 @@ struct HomeView: View {
                                     Label("Remove from Recently Viewed", systemImage: "minus.circle")
                                 }
                             }
-                            if (index + 1) % 3 != 0 && index < min(recents.count, 12) - 1 {
+                            if (index + 1) % 3 != 0 && index < shelf.count - 1 {
                                 Divider().padding(.leading, 76)
                             }
                         }
@@ -223,6 +231,8 @@ struct HomeView: View {
             .scrollTargetBehavior(.viewAligned)
         }
     }
+
+    private var shelf: [RecentApp] { Array(recents.uniqueByApp.prefix(12)) }
 
     // MARK: - Actions
 
@@ -260,7 +270,10 @@ struct HomeView: View {
     }
 
     private func remove(_ recent: RecentApp) {
-        withAnimation { modelContext.delete(recent) }
+        let appID = recent.appID
+        withAnimation {
+            for entry in recents where entry.appID == appID { modelContext.delete(entry) }
+        }
         try? modelContext.save()
     }
 
@@ -269,6 +282,37 @@ struct HomeView: View {
             for recent in recents { modelContext.delete(recent) }
         }
         try? modelContext.save()
+    }
+}
+
+/// A shelf cell: icon, one-line name over the developer, vertically
+/// centred against the icon, with the View pill trailing.
+private struct ShelfRow: View {
+    let recent: RecentApp
+
+    var body: some View {
+        HStack(spacing: 14) {
+            AppIconView(url: recent.iconURL, name: recent.name, size: 60)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(recent.name)
+                    .font(.body.weight(.medium))
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+                Text(recent.developerName ?? recent.bundleID)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            Text("View")
+                .font(.subheadline.weight(.bold))
+                .foregroundStyle(Color.accentColor)
+                .padding(.horizontal, 18)
+                .padding(.vertical, 6)
+                .background(Capsule().fill(Color(.tertiarySystemFill)))
+        }
+        .frame(height: 79)
+        .contentShape(Rectangle())
     }
 }
 

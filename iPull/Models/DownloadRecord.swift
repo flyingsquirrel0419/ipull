@@ -25,6 +25,8 @@ public struct DownloadRecord: Codable, Sendable, Identifiable, Equatable {
     public var totalBytes: Int64
     public var failureReason: String?
     public var createdAt: Date
+    /// Optional so records persisted by older builds still decode.
+    public var iconURL: URL?
 
     public init(
         id: UUID = UUID(),
@@ -37,7 +39,8 @@ public struct DownloadRecord: Codable, Sendable, Identifiable, Equatable {
         bytesDownloaded: Int64 = 0,
         totalBytes: Int64 = 0,
         failureReason: String? = nil,
-        createdAt: Date = .now
+        createdAt: Date = .now,
+        iconURL: URL? = nil
     ) {
         self.id = id
         self.appID = appID
@@ -50,6 +53,7 @@ public struct DownloadRecord: Codable, Sendable, Identifiable, Equatable {
         self.totalBytes = totalBytes
         self.failureReason = failureReason
         self.createdAt = createdAt
+        self.iconURL = iconURL
     }
 
     public var progress: Double {

@@ -14,6 +14,8 @@ public final class LibraryItem {
     /// since the app container path can change across updates).
     public var relativeFilePath: String
     public var sha256: String?
+    /// Optional so existing stores migrate without a custom migration plan.
+    public var iconURLString: String?
 
     public init(
         appName: String,
@@ -23,7 +25,8 @@ public final class LibraryItem {
         fileSizeBytes: Int64,
         downloadedAt: Date = .now,
         relativeFilePath: String,
-        sha256: String? = nil
+        sha256: String? = nil,
+        iconURL: URL? = nil
     ) {
         self.appName = appName
         self.version = version
@@ -33,7 +36,10 @@ public final class LibraryItem {
         self.downloadedAt = downloadedAt
         self.relativeFilePath = relativeFilePath
         self.sha256 = sha256
+        self.iconURLString = iconURL?.absoluteString
     }
+
+    public var iconURL: URL? { iconURLString.flatMap(URL.init(string:)) }
 }
 
 /// A recently viewed app for the Home screen.
