@@ -11,7 +11,6 @@ struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var folderName = SaveLocation.defaultFolderName
     @State private var keepLibraryCopy = SaveLocation.keepLibraryCopy
-    @State private var choosingFolder = false
     @State private var folderError: String?
 
     var body: some View {
@@ -22,7 +21,7 @@ struct SettingsView: View {
                 }
 
                 Section {
-                    Button { choosingFolder = true } label: {
+                    Button(action: chooseFolder) {
                         LabeledContent {
                             Text(folderName ?? "Ask Every Time")
                                 .foregroundStyle(.secondary)
@@ -74,21 +73,6 @@ struct SettingsView: View {
                     Text("iPull downloads App Store packages for apps on your own Apple Account. It does not bypass DRM, sign, or install apps.")
                 }
             }
-            .sheet(isPresented: $choosingFolder) {
-                FolderPicker { folder in
-                    choosingFolder = false
-                    guard let folder else { return }
-                    do {
-                        try SaveLocation.setDefaultFolder(folder)
-                        folderName = SaveLocation.defaultFolderName ?? folder.lastPathComponent
-                        folderError = nil
-                    } catch {
-                        Log.error(.library, "saving the download folder failed: \(String(describing: type(of: error)))")
-                        folderError = "That folder can't be used. Choose another one."
-                    }
-                }
-                .ignoresSafeArea()
-            }
             .onAppear {
                 folderName = SaveLocation.defaultFolderName
                 keepLibraryCopy = SaveLocation.keepLibraryCopy
@@ -120,6 +104,21 @@ struct SettingsView: View {
             }
         }
         .padding(.vertical, 6)
+    }
+
+    private func chooseFolder() {
+        FolderPicker.present { folder in
+            guard let folder else { return }
+            do {
+                try SaveLocation.setDefaultFolder(folder)
+                folderName = SaveLocation.defaultFolderName ?? folder.lastPathComponent
+                folderError = nil
+                Log.info(.library, "download folder set")
+            } catch {
+                Log.error(.library, "saving the download folder failed: \(String(describing: type(of: error)))")
+                folderError = "That folder can't be used. Choose another one."
+            }
+        }
     }
 
     @ViewBuilder
