@@ -8,18 +8,17 @@ build/
 !project.yml
 .swiftpm/
 
-# Local orchestration state (ruflo/claude-flow)
-.claude-flow/
-
-# Ruflo local secrets and runtime data
+# Local secrets
 .env
 .env.local
 .env.*.local
-.claude-flow/data/
-.claude-flow/logs/
-.claude-flow/sessions/
 
-# ruflo/swarm local state
+# ruflo/claude-flow local agent tooling (removed from this project)
+.claude/
+.claude-flow/
+.agents/
+.codex/
+CLAUDE.md
 .swarm/
 ruvector.db
 ruvector.db-*
