@@ -10,8 +10,7 @@ struct AppDetailView: View {
     @EnvironmentObject private var router: AppRouter
     @Environment(\.modelContext) private var modelContext
     @StateObject private var viewModel = AppDetailViewModel()
-    @State private var showAllVersions = false
-    @State private var choosingFolder = false
+    @State private var activeSheet: DetailSheet?
     @State private var iconFrame: CGRect = .zero
 
     var body: some View {
@@ -34,14 +33,20 @@ struct AppDetailView: View {
             }
         }
         .navigationBarTitleDisplayMode(.inline)
-        .sheet(isPresented: $showAllVersions) {
-            VersionsView(viewModel: viewModel)
-        }
-        // No save folder in Settings: ask where this download should go.
-        .fileImporter(isPresented: $choosingFolder, allowedContentTypes: [.folder]) { result in
-            guard case .success(let folder) = result else { return }
-            let bookmark = try? SaveLocation.bookmark(for: folder)
-            startDownload(to: bookmark)
+        // One sheet modifier for both, so the two never fight over presentation.
+        .sheet(item: $activeSheet) { sheet in
+            switch sheet {
+            case .versions:
+                VersionsView(viewModel: viewModel)
+            case .folder:
+                // No save folder in Settings: ask where this IPA goes.
+                // Cancelling still downloads, into iPull's Library.
+                FolderPicker { folder in
+                    activeSheet = nil
+                    startDownload(to: folder.flatMap { try? SaveLocation.bookmark(for: $0) })
+                }
+                .ignoresSafeArea()
+            }
         }
         // Re-run when the account changes so signing in from the account
         // sheet immediately unlocks versions and downloads here.
@@ -140,7 +145,7 @@ struct AppDetailView: View {
         if let bookmark = SaveLocation.defaultBookmark {
             startDownload(to: bookmark)
         } else {
-            choosingFolder = true
+            activeSheet = .folder
         }
     }
 
@@ -195,7 +200,7 @@ struct AppDetailView: View {
     private var versions: some View {
         VStack(alignment: .leading, spacing: 12) {
             if case .loaded(let versions) = viewModel.versionState, versions.count > 4 {
-                SectionTitle(title: "Version History", actionLabel: "See All") { showAllVersions = true }
+                SectionTitle(title: "Version History", actionLabel: "See All") { activeSheet = .versions }
             } else {
                 SectionTitle(title: "Version History")
             }
@@ -260,6 +265,11 @@ struct AppDetailView: View {
                                       developerName: app.developerName, iconURL: app.iconURL))
         try? modelContext.save()
     }
+}
+
+enum DetailSheet: String, Identifiable {
+    case versions, folder
+    var id: String { rawValue }
 }
 
 struct VersionRow: View {

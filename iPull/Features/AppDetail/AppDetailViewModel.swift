@@ -150,7 +150,8 @@ final class AppDetailViewModel: ObservableObject {
                 releaseDate: version.releaseDate,
                 isLatest: version.isLatest
             )
-            Log.info(.download, "download URL resolved; queueing")
+            Log.info(.download, "download URL resolved; queueing (folder=\(destinationBookmark != nil))")
+            environment.rememberOwnedApp(app.id)
             environment.downloadManager.enqueue(app: app, version: resolvedVersion, cdnURL: metadata.url,
                                                 destinationBookmark: destinationBookmark)
             return true
