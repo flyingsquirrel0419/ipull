@@ -2,83 +2,102 @@ import AppStoreCore
 import SwiftUI
 
 struct DownloadsView: View {
-    @EnvironmentObject private var environment: AppEnvironment
+    /// Observed directly: DownloadManager is its own ObservableObject, and
+    /// reading it through AppEnvironment never refreshed progress or state.
+    @ObservedObject var manager: DownloadManager
 
     var body: some View {
         NavigationStack {
-            let records = environment.downloadManager.records
+            let records = manager.records
             Group {
                 if records.isEmpty {
-                    ContentUnavailableView("No Downloads", systemImage: "arrow.down.circle",
-                                           description: Text("IPAs you download will appear here."))
+                    ContentUnavailableView {
+                        Label("No Downloads", systemImage: "arrow.down.circle")
+                    } description: {
+                        Text("Apps you download appear here while they transfer.")
+                    }
                 } else {
                     List {
-                        let downloading = records.filter { $0.state == .downloading }
-                        let queued = records.filter { $0.state == .queued }
-                        let completed = records.filter { $0.state == .completed }
+                        let active = records.filter { $0.state == .downloading || $0.state == .queued }
                         let failed = records.filter { $0.state == .failed || $0.state == .cancelled }
+                        let completed = records.filter { $0.state == .completed }
 
-                        if !downloading.isEmpty { Section("Downloading") { ForEach(downloading) { row($0) } } }
-                        if !queued.isEmpty { Section("Queued") { ForEach(queued) { row($0) } } }
-                        if !failed.isEmpty { Section("Failed") { ForEach(failed) { row($0) } } }
+                        if !active.isEmpty { Section("In Progress") { ForEach(active) { row($0) } } }
+                        if !failed.isEmpty { Section("Needs Attention") { ForEach(failed) { row($0) } } }
                         if !completed.isEmpty { Section("Completed") { ForEach(completed) { row($0) } } }
                     }
+                    .listStyle(.insetGrouped)
                 }
             }
             .navigationTitle("Downloads")
+            .toolbar { AccountToolbarButton() }
+        }
+    }
+
+    private func row(_ record: DownloadRecord) -> some View {
+        HStack(spacing: 14) {
+            AppIconView(url: nil, name: record.appName, size: 48)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(record.appName).font(.body.weight(.semibold)).lineLimit(1)
+                subtitle(record)
+            }
+            Spacer(minLength: 8)
+            trailing(record)
+        }
+        .padding(.vertical, 4)
+        .swipeActions {
+            if record.state != .downloading {
+                Button(role: .destructive) { manager.remove(record.id) } label: {
+                    Label("Remove", systemImage: "trash")
+                }
+            }
         }
     }
 
     @ViewBuilder
-    private func row(_ record: DownloadRecord) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack {
-                Text(record.appName).font(.body)
-                Spacer()
-                Text(record.version).font(.subheadline).foregroundStyle(.secondary)
+    private func subtitle(_ record: DownloadRecord) -> some View {
+        switch record.state {
+        case .downloading:
+            let progress = manager.progress[record.id]
+            let done = ByteFormat.string(progress?.bytesDownloaded ?? record.bytesDownloaded)
+            let total = ByteFormat.string(progress?.totalBytes ?? record.totalBytes)
+            if let speed = progress?.bytesPerSecond, speed > 0 {
+                Text("\(done) of \(total) · \(ByteFormat.string(Int64(speed)))/s")
+                    .font(.caption).foregroundStyle(.secondary).monospacedDigit()
+            } else {
+                Text("\(done) of \(total)").font(.caption).foregroundStyle(.secondary).monospacedDigit()
             }
-
-            switch record.state {
-            case .downloading:
-                let progress = environment.downloadManager.progress[record.id]
-                ProgressView(value: progress?.fraction ?? record.progress)
-                HStack {
-                    Text(ByteFormat.string(progress?.bytesDownloaded ?? record.bytesDownloaded))
-                    Text("/")
-                    Text(ByteFormat.string(progress?.totalBytes ?? record.totalBytes))
-                    Spacer()
-                    if let speed = progress?.bytesPerSecond, speed > 0 {
-                        Text("\(ByteFormat.string(Int64(speed)))/s").foregroundStyle(.secondary)
-                    }
-                }
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            case .failed:
-                Text(record.failureReason ?? AppStoreErrorCore.downloadFailedMessage)
-                    .font(.caption).foregroundStyle(.red)
-            case .queued:
-                Text("Waiting…").font(.caption).foregroundStyle(.secondary)
-            default:
-                EmptyView()
-            }
-
-            HStack {
-                if record.state == .downloading {
-                    Button("Cancel") { environment.downloadManager.cancel(record.id) }
-                        .buttonStyle(.bordered)
-                }
-                if record.state == .failed || record.state == .cancelled {
-                    Button("Retry") { environment.downloadManager.retry(record.id) }
-                        .buttonStyle(.bordered)
-                }
-                if record.state != .downloading {
-                    Button("Remove", role: .destructive) { environment.downloadManager.remove(record.id) }
-                        .buttonStyle(.bordered)
-                }
-            }
-            .font(.caption)
+        case .queued:
+            Text("Waiting · Version \(record.version)").font(.caption).foregroundStyle(.secondary)
+        case .failed:
+            Text(record.failureReason ?? AppStoreErrorCore.downloadFailedMessage)
+                .font(.caption).foregroundStyle(.red).lineLimit(2)
+        case .cancelled:
+            Text("Cancelled").font(.caption).foregroundStyle(.secondary)
+        default:
+            Text("Version \(record.version)").font(.caption).foregroundStyle(.secondary)
         }
-        .padding(.vertical, 4)
+    }
+
+    @ViewBuilder
+    private func trailing(_ record: DownloadRecord) -> some View {
+        switch record.state {
+        case .downloading:
+            Button { manager.cancel(record.id) } label: {
+                DownloadRing(fraction: manager.progress[record.id]?.fraction ?? record.progress)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Stop download")
+        case .queued:
+            ProgressView()
+        case .failed, .cancelled:
+            Button("Retry") { manager.retry(record.id) }.buttonStyle(.pill)
+        default:
+            Image(systemName: "checkmark.circle.fill")
+                .font(.title2)
+                .foregroundStyle(.green)
+                .accessibilityLabel("Completed")
+        }
     }
 }
 

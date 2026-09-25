@@ -16,14 +16,18 @@ public enum AppGroup {
 public final class AppRouter: ObservableObject {
     public enum Route: Hashable {
         case appDetail(id: Int64)
+        case purchased
     }
 
     @Published public var homePath: [Route] = []
     @Published public var searchPath: [Route] = []
     @Published public var selectedTab: Tab = .home
+    /// The account sheet (sign-in, storage, diagnostics), opened from the
+    /// profile button on every tab or from any "Sign In" prompt.
+    @Published public var isAccountPresented = false
 
     public enum Tab: Hashable {
-        case home, search, library, downloads, settings
+        case home, search, library, downloads
     }
 
     /// Handle ipull:// deep links and App Group handoffs from the Share

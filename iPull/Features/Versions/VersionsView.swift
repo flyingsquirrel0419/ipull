@@ -1,7 +1,7 @@
 import SwiftUI
 import AppStoreCore
 
-/// Full version list sheet from App Detail.
+/// Full version history sheet from App Detail.
 struct VersionsView: View {
     @ObservedObject var viewModel: AppDetailViewModel
     @Environment(\.dismiss) private var dismiss
@@ -11,7 +11,7 @@ struct VersionsView: View {
             Group {
                 switch viewModel.versionState {
                 case .loading:
-                    ProgressView("Loading versions…")
+                    ProgressView().controlSize(.large)
                 case .requiresSignIn:
                     ContentUnavailableView("Sign In Required", systemImage: "person.crop.circle.badge.exclamationmark",
                                            description: Text("Sign in to browse versions."))
@@ -20,37 +20,22 @@ struct VersionsView: View {
                                            description: Text(message))
                 case .loaded(let versions):
                     List(versions) { version in
-                        Button {
+                        VersionRow(version: version, isSelected: viewModel.selectedVersion == version) {
                             viewModel.select(version)
                             dismiss()
-                        } label: {
-                            HStack {
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(version.displayVersion ?? "Version \(version.externalVersionID)")
-                                        .foregroundStyle(.primary)
-                                    if let date = version.releaseDate {
-                                        Text(date, style: .date).font(.caption).foregroundStyle(.secondary)
-                                    }
-                                }
-                                Spacer()
-                                if version.isLatest {
-                                    Text("Latest").font(.caption).foregroundStyle(.secondary)
-                                }
-                                if viewModel.selectedVersion == version {
-                                    Image(systemName: "checkmark").foregroundStyle(.tint)
-                                }
-                            }
                         }
                     }
+                    .listStyle(.plain)
                 }
             }
-            .navigationTitle("Versions")
+            .navigationTitle("Version History")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button("Done") { dismiss() }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { dismiss() }.fontWeight(.semibold)
                 }
             }
         }
+        .presentationDragIndicator(.visible)
     }
 }

@@ -119,6 +119,9 @@ public final class URLSessionHTTPClient: HTTPClient, @unchecked Sendable {
             }
             return HTTPResponse(statusCode: http.statusCode, headers: headers, data: data)
         } catch let error as URLError {
+            // A cancelled task (the view that started it went away) is not a
+            // failure to show the user.
+            if error.code == .cancelled { throw CancellationError() }
             // Surface the real URLError code in the (redacted) debug log so
             // on-device failures are diagnosable; user-facing text stays generic.
             Log.error(.network, "request failed: URLError \(error.code.rawValue) \(error.code)")

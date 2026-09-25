@@ -44,12 +44,18 @@ public final class RecentApp {
     public var name: String
     public var developerName: String?
     public var viewedAt: Date
+    /// Optional so existing stores migrate without a custom migration plan.
+    public var iconURLString: String?
 
-    public init(appID: Int64, bundleID: String, name: String, developerName: String?, viewedAt: Date = .now) {
+    public init(appID: Int64, bundleID: String, name: String, developerName: String?,
+                iconURL: URL? = nil, viewedAt: Date = .now) {
         self.appID = appID
         self.bundleID = bundleID
         self.name = name
         self.developerName = developerName
+        self.iconURLString = iconURL?.absoluteString
         self.viewedAt = viewedAt
     }
+
+    public var iconURL: URL? { iconURLString.flatMap(URL.init(string:)) }
 }

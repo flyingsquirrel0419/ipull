@@ -255,7 +255,7 @@ public final class AuthenticationService: AuthenticationServicing, @unchecked Se
         assignedPodID = nil
         authenticationRedirectURL = nil
         var endpoint = bag.authEndpoint
-        let stage = normalizedCode == nil ? "password" : "2fa"
+        let stage = normalizedCode == nil ? "signin" : "2fa"
         Log.info(.auth, "AUTH FLOW ID=\(Self.shortHash(of: guid)) stage=\(stage) identityGeneration=\(identityGeneration)")
         // Controlled experiment: payload schema and attempt value come from
         // the experiment configuration, identical across the password and
@@ -390,7 +390,7 @@ public final class AuthenticationService: AuthenticationServicing, @unchecked Se
                     } else {
                         let cookieNames2 = await (http as? CookieInspecting)?.cookieNames(for: endpoint) ?? []
                         Log.info(.auth,
-                            "[auth][verdict] passwordReachedMZFinance=\(passwordReachedMZFinance) twoFAReachedMZFinance=true "
+                            "[auth][verdict] signInReachedMZFinance=\(passwordReachedMZFinance) twoFAReachedMZFinance=true "
                             + "status=\(response.statusCode) payloadMode=\(experiment.payloadMode == .upstreamParity ? "upstreamParity" : "legacyCreateSession") "
                             + "payloadAttempt=\(payloadAttempt) signerFresh=\(signerGeneration >= 1) sameGUID=true sameMachineID=true "
                             + "cookieNames=[\(cookieNames2.joined(separator: ","))] passwordVs2FAMatched=\(passwordVs2FAMatched) configuratorProfileMatched=\(configuratorProfileMatched) bodySignatureMatched=\(bodySignatureMatched)")
@@ -398,7 +398,7 @@ public final class AuthenticationService: AuthenticationServicing, @unchecked Se
                 } else if normalizedCode != nil, layer == .edge {
                     let cookieNames2 = await (http as? CookieInspecting)?.cookieNames(for: endpoint) ?? []
                     Log.info(.auth,
-                        "[auth][verdict] passwordReachedMZFinance=\(passwordReachedMZFinance) twoFAReachedMZFinance=false "
+                        "[auth][verdict] signInReachedMZFinance=\(passwordReachedMZFinance) twoFAReachedMZFinance=false "
                         + "status=\(response.statusCode) payloadMode=\(experiment.payloadMode == .upstreamParity ? "upstreamParity" : "legacyCreateSession") "
                         + "payloadAttempt=\(payloadAttempt) signerFresh=\(signerGeneration >= 1) sameGUID=true sameMachineID=true "
                         + "cookieNames=[\(cookieNames2.joined(separator: ","))] passwordVs2FAMatched=\(passwordVs2FAMatched) configuratorProfileMatched=\(configuratorProfileMatched) bodySignatureMatched=\(bodySignatureMatched)")

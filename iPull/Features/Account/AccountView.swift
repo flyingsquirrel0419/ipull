@@ -21,6 +21,7 @@ struct AccountView: View {
             if let session = environment.session {
                 signedInSection(session)
             } else {
+                headerSection
                 if environment.needsTwoFactorCode {
                     twoFactorSection
                 } else {
@@ -31,7 +32,8 @@ struct AccountView: View {
                 privacySection
             }
         }
-        .navigationTitle("Account")
+        .navigationTitle(environment.session == nil ? "" : "Apple Account")
+        .navigationBarTitleDisplayMode(.inline)
         .onChange(of: environment.needsTwoFactorCode) { _, needed in
             if needed {
                 viewModel.twoFactorCode = ""
@@ -52,11 +54,18 @@ struct AccountView: View {
     @ViewBuilder
     private func signedInSection(_ session: AppleAccountSession) -> some View {
         Section {
-            LabeledContent("Name", value: session.displayName)
-            LabeledContent("Email", value: session.email)
+            VStack(spacing: 8) {
+                AccountAvatar(name: session.displayName, size: 84)
+                Text(session.displayName).font(.title2.weight(.bold))
+                Text(session.email).font(.subheadline).foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 8)
+            .listRowBackground(Color.clear)
+        }
+
+        Section {
             LabeledContent("Storefront", value: session.countryCode?.uppercased() ?? session.storefront)
-        } header: {
-            Label("Signed In", systemImage: "checkmark.circle.fill")
         }
 
         Section {
@@ -66,7 +75,7 @@ struct AccountView: View {
                 HStack {
                     Spacer()
                     if environment.isAuthenticating { ProgressView() }
-                    Text("Sign Out")
+                    Text("Sign Out").fontWeight(.semibold)
                     Spacer()
                 }
             }
@@ -74,6 +83,29 @@ struct AccountView: View {
             .accessibilityHint("Ends the session and removes the stored token from this device")
         } footer: {
             Text("Signing out removes the session token from the Keychain on this device.")
+        }
+    }
+
+    private var headerSection: some View {
+        Section {
+            VStack(spacing: 10) {
+                Image(systemName: environment.needsTwoFactorCode ? "lock.shield.fill" : "person.crop.circle.fill")
+                    .font(.system(size: 64))
+                    .symbolRenderingMode(.hierarchical)
+                    .foregroundStyle(Color.accentColor)
+                Text(environment.needsTwoFactorCode ? "Two-Factor Authentication" : "Apple Account")
+                    .font(.title.weight(.bold))
+                    .multilineTextAlignment(.center)
+                Text(environment.needsTwoFactorCode
+                     ? "Enter the verification code shown on your other devices."
+                     : "Sign in with the Apple Account that owns the apps you want to download.")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 8)
+            .listRowBackground(Color.clear)
         }
     }
 
@@ -89,8 +121,12 @@ struct AccountView: View {
             SecureField("Password", text: $viewModel.password)
                 .textContentType(.password)
                 .focused($focusedField, equals: .password)
-        } footer: {
-            Text("Use the Apple Account that owns the apps you want to download.")
+                .submitLabel(.go)
+                .onSubmit {
+                    guard viewModel.canSubmit(needsTwoFactor: false), !environment.isAuthenticating else { return }
+                    focusedField = nil
+                    Task { await viewModel.signIn(environment: environment) }
+                }
         }
     }
 
@@ -98,15 +134,16 @@ struct AccountView: View {
         Section {
             TextField("123 456", text: $viewModel.twoFactorCode)
                 .keyboardType(.numberPad)
+                .textContentType(.oneTimeCode)
+                .font(.title2.monospacedDigit())
+                .multilineTextAlignment(.center)
                 .focused($focusedField, equals: .twoFactorCode)
                 .accessibilityLabel("Six-digit verification code")
                 .accessibilityHint("Shown on a device trusted by your Apple Account")
-        } header: {
-            Label("Two-Factor Authentication", systemImage: "lock.shield")
         } footer: {
             VStack(alignment: .leading, spacing: 8) {
-                Text("Enter the six-digit code shown on a trusted device. Your email and password are kept from the previous step.")
-                Button("Use a different account") {
+                Text("Your email and password are kept from the previous step.")
+                Button("Use a Different Account") {
                     environment.cancelTwoFactor()
                     viewModel.clearCredentials()
                     focusedField = .email
@@ -206,23 +243,37 @@ struct AccountView: View {
                 focusedField = nil
                 Task { await viewModel.signIn(environment: environment) }
             } label: {
-                HStack {
-                    Spacer()
-                    if environment.isAuthenticating { ProgressView() }
+                HStack(spacing: 8) {
+                    if environment.isAuthenticating { ProgressView().tint(.white) }
                     Text(environment.needsTwoFactorCode ? "Verify" : "Sign In")
-                    Spacer()
                 }
+                .font(.headline)
+                .foregroundStyle(.white)
+                .frame(maxWidth: .infinity, minHeight: 50)
+                .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(Color.accentColor))
             }
-            .disabled(!viewModel.canSubmit(needsTwoFactor: environment.needsTwoFactorCode)
-                      || environment.isAuthenticating)
+            .buttonStyle(.plain)
+            .opacity(submitEnabled ? 1 : 0.4)
+            .disabled(!submitEnabled)
+            .listRowInsets(EdgeInsets())
+            .listRowBackground(Color.clear)
         }
+    }
+
+    private var submitEnabled: Bool {
+        viewModel.canSubmit(needsTwoFactor: environment.needsTwoFactorCode) && !environment.isAuthenticating
     }
 
     private var privacySection: some View {
         Section {
-            Text("Your credentials are sent only to Apple. iPull has no server. Your password is never stored; the session token is kept in the iOS Keychain on this device.")
-                .font(.footnote)
-                .foregroundStyle(.secondary)
+            Label {
+                Text("Your credentials are sent only to Apple. iPull has no server. Your password is never stored; the session token stays in this device's Keychain.")
+            } icon: {
+                Image(systemName: "hand.raised.fill").foregroundStyle(Color.accentColor)
+            }
+            .font(.footnote)
+            .foregroundStyle(.secondary)
+            .listRowBackground(Color.clear)
         }
     }
 }

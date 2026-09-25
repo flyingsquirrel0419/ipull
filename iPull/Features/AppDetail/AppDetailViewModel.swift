@@ -23,13 +23,16 @@ final class AppDetailViewModel: ObservableObject {
     @Published private(set) var canDownload = false
 
     func load(appID: Int64, environment: AppEnvironment) async {
-        state = .loading
+        // Keep the loaded page on screen when re-running after sign-in.
+        if app?.id != appID { state = .loading }
         let country = environment.session?.countryCode ?? "us"
         do {
             let app = try await environment.client.search.lookup(appID: appID, countryCode: country)
             self.app = app
             state = .loaded
             await loadVersions(app: app, environment: environment)
+        } catch is CancellationError {
+            return
         } catch let error as AppStoreError {
             state = .failed(error.userMessage)
         } catch {
@@ -65,6 +68,8 @@ final class AppDetailViewModel: ObservableObject {
             versionState = .loaded(versions)
             selectedVersion = versions.first(where: \.isLatest) ?? versions.first
             canDownload = selectedVersion != nil
+        } catch is CancellationError {
+            return
         } catch let error as AppStoreError {
             switch error {
             case .sessionExpired, .authenticationRequired:

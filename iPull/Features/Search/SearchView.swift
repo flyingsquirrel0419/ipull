@@ -10,19 +10,18 @@ struct SearchView: View {
         NavigationStack(path: $router.searchPath) {
             content
                 .navigationTitle("Search")
-                .searchable(text: $viewModel.query, prompt: "App name")
-                .onSubmit(of: .search) { Task { await viewModel.search(environment: environment) } }
+                .toolbar { AccountToolbarButton() }
+                .searchable(text: $viewModel.query,
+                            placement: .navigationBarDrawer(displayMode: .always),
+                            prompt: "Apps, bundle IDs and more")
+                .onSubmit(of: .search) { viewModel.submit(environment: environment) }
                 .onReceive(NotificationCenter.default.publisher(for: .ipullSearchRequested)) { note in
                     if let input = note.object as? String {
                         viewModel.query = input
-                        Task { await viewModel.search(environment: environment) }
+                        viewModel.submit(environment: environment)
                     }
                 }
-                .navigationDestination(for: AppRouter.Route.self) { route in
-                    switch route {
-                    case .appDetail(let id): AppDetailView(appID: id)
-                    }
-                }
+                .navigationDestination(for: AppRouter.Route.self) { RouteDestination(route: $0) }
         }
     }
 
@@ -30,31 +29,37 @@ struct SearchView: View {
     private var content: some View {
         switch viewModel.state {
         case .idle:
-            ContentUnavailableView(
-                "Search the App Store",
-                systemImage: "magnifyingglass",
-                description: Text("Search by app name to find an app.")
-            )
+            ContentUnavailableView {
+                Label("Find Any App", systemImage: "magnifyingglass")
+            } description: {
+                Text("Search by name, or paste a bundle ID such as com.apple.Pages.")
+            }
         case .loading:
-            ProgressView("Searching…")
+            ProgressView()
+                .controlSize(.large)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
         case .loaded(let apps):
             if apps.isEmpty {
                 ContentUnavailableView.search(text: viewModel.query)
             } else {
                 List(apps) { app in
-                    Button {
-                        router.searchPath.append(.appDetail(id: app.id))
-                    } label: {
+                    Button { router.searchPath.append(.appDetail(id: app.id)) } label: {
                         SearchResultRow(app: app)
                     }
+                    .buttonStyle(.plain)
+                    .alignmentGuide(.listRowSeparatorLeading) { _ in 76 }
                 }
+                .listStyle(.plain)
             }
         case .failed(let message):
-            ContentUnavailableView(
-                "Search Failed",
-                systemImage: "exclamationmark.triangle",
-                description: Text(message)
-            )
+            ContentUnavailableView {
+                Label("Search Unavailable", systemImage: "wifi.exclamationmark")
+            } description: {
+                Text(message)
+            } actions: {
+                Button("Try Again") { viewModel.submit(environment: environment) }
+                    .buttonStyle(.pill)
+            }
         }
     }
 }
@@ -63,20 +68,10 @@ struct SearchResultRow: View {
     let app: AppStoreApp
 
     var body: some View {
-        HStack(spacing: 12) {
-            AsyncImage(url: app.iconURL) { image in
-                image.resizable()
-            } placeholder: {
-                RoundedRectangle(cornerRadius: 10).fill(.quaternary)
-            }
-            .frame(width: 44, height: 44)
-            .clipShape(RoundedRectangle(cornerRadius: 10))
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text(app.name).font(.body).foregroundStyle(.primary)
-                Text(app.developerName ?? "").font(.caption).foregroundStyle(.secondary)
-                Text(app.bundleID).font(.caption2).foregroundStyle(.tertiary)
-            }
+        AppRow(iconURL: app.iconURL, name: app.name,
+               subtitle: app.developerName ?? app.bundleID,
+               detail: app.developerName == nil ? nil : app.bundleID) {
+            Text("View")
         }
     }
 }

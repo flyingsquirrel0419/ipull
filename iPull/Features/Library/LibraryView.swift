@@ -16,29 +16,33 @@ struct LibraryView: View {
         NavigationStack {
             Group {
                 if items.isEmpty {
-                    ContentUnavailableView("No IPAs Yet", systemImage: "shippingbox",
-                                           description: Text("Downloaded IPAs will appear here."))
+                    ContentUnavailableView {
+                        Label("No Apps Yet", systemImage: "square.stack")
+                    } description: {
+                        Text("Downloaded IPAs are kept here, ready to share or save to Files.")
+                    }
                 } else {
                     List {
-                        ForEach(items) { item in
-                            LibraryRow(item: item, storage: environment.storage)
-                                .contextMenu { contextMenu(for: item) }
-                                .swipeActions {
-                                    Button(role: .destructive) { delete(item) } label: {
-                                        Label("Delete", systemImage: "trash")
+                        Section {
+                            ForEach(items) { item in
+                                LibraryRow(item: item) { itemToShare = item }
+                                    .contextMenu { contextMenu(for: item) }
+                                    .swipeActions {
+                                        Button(role: .destructive) { delete(item) } label: {
+                                            Label("Delete", systemImage: "trash")
+                                        }
                                     }
-                                }
+                                    .alignmentGuide(.listRowSeparatorLeading) { _ in 76 }
+                            }
+                        } footer: {
+                            Text("\(items.count) \(items.count == 1 ? "app" : "apps") · \(ByteFormat.string(environment.storage.totalStorageBytes()))")
                         }
                     }
+                    .listStyle(.plain)
                 }
             }
             .navigationTitle("Library")
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Text(ByteFormat.string(environment.storage.totalStorageBytes()))
-                        .font(.caption).foregroundStyle(.secondary)
-                }
-            }
+            .toolbar { AccountToolbarButton() }
             .sheet(item: $itemToShare) { item in
                 ShareSheetView(items: [environment.storage.absoluteURL(forRelative: item.relativeFilePath)])
             }
@@ -128,24 +132,34 @@ struct LibraryView: View {
 
 struct LibraryRow: View {
     let item: LibraryItem
-    let storage: IPAStorage
+    let share: @MainActor () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 3) {
-            Text(item.appName).font(.body)
-            Text(item.version).font(.subheadline).foregroundStyle(.secondary)
-            HStack {
-                Text(ByteFormat.string(item.fileSizeBytes))
-                Text("·")
-                Text(item.downloadedAt, style: .date)
+        HStack(spacing: 16) {
+            AppIconView(url: nil, name: item.appName, size: 60)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(item.appName).font(.body).lineLimit(2)
+                Text("Version \(item.version)").font(.subheadline).foregroundStyle(.secondary)
+                HStack(spacing: 4) {
+                    Text(ByteFormat.string(item.fileSizeBytes))
+                    Text("·")
+                    Text(item.downloadedAt, format: .dateTime.day().month().year())
+                    if item.sha256 != nil {
+                        Image(systemName: "checkmark.seal.fill").foregroundStyle(.green)
+                            .accessibilityLabel("Checksum recorded")
+                    }
+                }
+                .font(.caption)
+                .foregroundStyle(.tertiary)
             }
-            .font(.caption).foregroundStyle(.secondary)
-            if let sha = item.sha256 {
-                Text("SHA-256 \(sha.prefix(16))…")
-                    .font(.caption2).foregroundStyle(.tertiary).monospaced()
+            Spacer(minLength: 8)
+            Button { share() } label: {
+                Image(systemName: "square.and.arrow.up")
             }
+            .buttonStyle(.pill)
+            .accessibilityLabel("Share \(item.appName)")
         }
-        .padding(.vertical, 2)
+        .padding(.vertical, 6)
     }
 }
 
