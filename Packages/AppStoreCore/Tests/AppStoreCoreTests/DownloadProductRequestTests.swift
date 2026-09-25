@@ -14,7 +14,7 @@ final class DownloadProductRequestTests: XCTestCase {
 
     func testVersionListParsing() throws {
         let item = try XCTUnwrap(DownloadProductRequest.interpret(plist: [
-            "items": [[
+            "songList": [[
                 "metadata": [
                     "softwareVersionExternalIdentifiers": [8_000_000_001, 8_000_000_002, 8_000_000_003],
                     "softwareVersionExternalIdentifier": 8_000_000_003,
@@ -44,5 +44,28 @@ final class DownloadProductRequestTests: XCTestCase {
     func testEmptyItemsReturnsNilForFallback() throws {
         let item = try DownloadProductRequest.interpret(plist: [:])
         XCTAssertNil(item)
+    }
+
+    func testSongListCarriesSinfs() throws {
+        let item = try XCTUnwrap(DownloadProductRequest.interpret(plist: [
+            "songList": [["URL": "https://cdn.apple.com/a.ipa", "sinfs": [["id": 0, "sinf": Data([1, 2])]]]],
+        ]))
+        XCTAssertEqual(item.sinfs.count, 1)
+    }
+
+    func testNoLongerAvailableFallsBack() throws {
+        XCTAssertNil(try DownloadProductRequest.interpret(plist: ["customerMessage": "This item is no longer available"]))
+    }
+
+    func testOtherCustomerMessageIsAnError() {
+        XCTAssertThrowsError(try DownloadProductRequest.interpret(plist: ["customerMessage": "Something else"]))
+    }
+
+    func testDispatchURLUsesBagEndpointVerbatim() {
+        let bag = URL(string: "https://downloaddispatch.itunes.apple.com/r/redownload")
+        XCTAssertEqual(DownloadProductRequest.dispatchURL(bag, path: "/r/redownload", guid: "AABBCCDDEEFF")?.absoluteString,
+                       "https://downloaddispatch.itunes.apple.com/r/redownload?guid=AABBCCDDEEFF")
+        XCTAssertNil(DownloadProductRequest.dispatchURL(URL(string: "https://example.com/r/redownload"),
+                                                        path: "/r/redownload", guid: "AABBCCDDEEFF"))
     }
 }

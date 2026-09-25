@@ -14,14 +14,24 @@ struct SearchView: View {
                 .searchable(text: $viewModel.query,
                             placement: .navigationBarDrawer(displayMode: .always),
                             prompt: "Apps, bundle IDs and more")
-                .onSubmit(of: .search) { viewModel.submit(environment: environment) }
-                .onReceive(NotificationCenter.default.publisher(for: .ipullSearchRequested)) { note in
-                    if let input = note.object as? String {
-                        viewModel.query = input
-                        viewModel.submit(environment: environment)
-                    }
+                .onSubmit(of: .search) { submit() }
+                .onChange(of: router.pendingSearch, initial: true) { _, term in
+                    guard let term, !term.isEmpty else { return }
+                    router.pendingSearch = nil
+                    viewModel.query = term
+                    viewModel.submit(environment: environment)
                 }
                 .navigationDestination(for: AppRouter.Route.self) { RouteDestination(route: $0) }
+        }
+    }
+
+    /// Links and App IDs typed here open the app, as on Home.
+    private func submit() {
+        switch AppStoreURLParser.parse(viewModel.query) {
+        case .success(.appStoreURL(let id, _)), .success(.appID(let id)):
+            router.searchPath.append(.appDetail(id: id))
+        default:
+            viewModel.submit(environment: environment)
         }
     }
 
@@ -57,7 +67,7 @@ struct SearchView: View {
             } description: {
                 Text(message)
             } actions: {
-                Button("Try Again") { viewModel.submit(environment: environment) }
+                Button("Try Again") { submit() }
                     .buttonStyle(.pill)
             }
         }

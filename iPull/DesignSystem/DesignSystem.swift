@@ -163,3 +163,36 @@ struct SectionTitle: View {
         }
     }
 }
+
+/// An App Store list row: icon, two lines of text and a trailing pill.
+struct AppRow<Accessory: View>: View {
+    let iconURL: URL?
+    let name: String
+    var subtitle: String?
+    var detail: String?
+    @ViewBuilder var accessory: () -> Accessory
+
+    var body: some View {
+        HStack(spacing: 16) {
+            AppIconView(url: iconURL, name: name, size: 60)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(name).font(.body).foregroundStyle(.primary).lineLimit(2)
+                if let subtitle {
+                    Text(subtitle).font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
+                }
+                if let detail {
+                    Text(detail).font(.caption).foregroundStyle(.tertiary).lineLimit(1)
+                }
+            }
+            Spacer(minLength: 8)
+            accessory()
+                .font(.subheadline.weight(.bold))
+                .foregroundStyle(Color.accentColor)
+                .padding(.horizontal, 18)
+                .padding(.vertical, 6)
+                .background(Capsule().fill(Color(.tertiarySystemFill)))
+        }
+        .padding(.vertical, 10)
+        .contentShape(Rectangle())
+    }
+}
