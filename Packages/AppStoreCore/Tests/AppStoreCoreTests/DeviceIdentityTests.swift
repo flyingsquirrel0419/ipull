@@ -25,6 +25,13 @@ final class DeviceIdentityTests: XCTestCase {
         XCTAssertEqual(try DeviceIdentity.currentGUID(secretStore: store), rotated)
     }
 
+    func testMachineIDIsRawBytesOfGUID() {
+        // ipatool parity: guid == uppercase hex(machineID).
+        let id = DeviceIdentity.machineID(forGUID: "AABBCCDDEEFF")
+        XCTAssertEqual(id, Data([0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF]))
+        XCTAssertEqual(id.map { String(format: "%02X", $0) }.joined(), "AABBCCDDEEFF")
+    }
+
     func testValidation() {
         XCTAssertTrue(DeviceIdentity.isValidGUID("AABBCCDDEEFF"))
         XCTAssertFalse(DeviceIdentity.isValidGUID("aabbccddeeff")) // lowercase

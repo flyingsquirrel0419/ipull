@@ -252,11 +252,11 @@ public final class AuthenticationService: AuthenticationServicing, @unchecked Se
                 await closing.closeSession()
             }
             Log.info(.auth, "preparing fresh SAP signer for 2FA (signerGeneration=\(signerGeneration), same guid/machineID)")
-            signer = try await signerFactory(Data(guid.utf8))
+            signer = try await signerFactory(DeviceIdentity.machineID(forGUID: guid))
         } else {
             if signer == nil {
                 progress?(.initializingSigner)
-                signer = try await signerFactory(Data(guid.utf8))
+                signer = try await signerFactory(DeviceIdentity.machineID(forGUID: guid))
             }
             // signerGeneration counts signers built AFTER the initial one,
             // so the password stage logs 0 and a fresh 2FA signer logs 1.
@@ -502,7 +502,7 @@ public final class AuthenticationService: AuthenticationServicing, @unchecked Se
                     Log.info(.auth, "guid rotated; retrying with fresh identity (identityGeneration=\(identityGeneration))")
                     let freshGUID = try DeviceIdentity.rotateGUID(secretStore: secrets)
                     guid = freshGUID
-                    signer = try await signerFactory(Data(freshGUID.utf8))
+                    signer = try await signerFactory(DeviceIdentity.machineID(forGUID: freshGUID))
                     rateLimitRetries = 0
                     // Rotation replaces the identity and re-runs the
                     // password stage on the fresh identity; it does not

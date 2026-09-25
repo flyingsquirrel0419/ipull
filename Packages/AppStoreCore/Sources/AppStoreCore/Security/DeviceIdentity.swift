@@ -55,6 +55,25 @@ public enum DeviceIdentity {
         return String(hex.prefix(12))
     }
 
+    /// The SAP hardware ID for a GUID: the raw bytes the GUID is the hex
+    /// form of (6 bytes for a 12-char GUID), matching ipatool's
+    /// machineIdentity where guid = uppercase hex(machineID). Feeding the
+    /// GUID's ASCII bytes instead makes the SAP-attested machine differ
+    /// from the body's guid, and Apple then never verifies the 2FA code.
+    public static func machineID(forGUID guid: String) -> Data {
+        var bytes = Data()
+        var index = guid.startIndex
+        while index < guid.endIndex {
+            let next = guid.index(index, offsetBy: 2, limitedBy: guid.endIndex) ?? guid.endIndex
+            guard let byte = UInt8(guid[index..<next], radix: 16) else {
+                return Data(guid.utf8)
+            }
+            bytes.append(byte)
+            index = next
+        }
+        return bytes
+    }
+
     public static func isValidGUID(_ guid: String) -> Bool {
         guid.count == 12 && guid.allSatisfy { $0.isHexDigit && !$0.isLowercase }
     }

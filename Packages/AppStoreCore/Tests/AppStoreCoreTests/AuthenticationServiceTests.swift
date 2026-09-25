@@ -312,7 +312,7 @@ final class AuthenticationServiceTests: XCTestCase {
         // 2FA submit per the reference-flow diagnostic) uses the same GUID.
         XCTAssertFalse(factory.hardwareIDs.isEmpty)
         for id in factory.hardwareIDs {
-            XCTAssertEqual(id, Data("AABBCCDDEEFF".utf8))
+            XCTAssertEqual(id, Data([0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF]))
         }
         let stored = try XCTUnwrap(secrets.load(key: DeviceIdentity.keychainKey))
         XCTAssertEqual(String(data: stored, encoding: .utf8), "AABBCCDDEEFF")
@@ -346,7 +346,7 @@ final class AuthenticationServiceTests: XCTestCase {
         // No rotation attempted: all signers share the same hardware ID.
         XCTAssertFalse(factory.hardwareIDs.isEmpty)
         for id in factory.hardwareIDs {
-            XCTAssertEqual(id, Data("AABBCCDDEEFF".utf8))
+            XCTAssertEqual(id, Data([0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF]))
         }
         XCTAssertEqual(http.requestCount, 3)
     }
@@ -377,7 +377,7 @@ final class AuthenticationServiceTests: XCTestCase {
         guard case .success = result else { return XCTFail("Expected success after transient retries") }
         XCTAssertFalse(factory.hardwareIDs.isEmpty)
         for id in factory.hardwareIDs {
-            XCTAssertEqual(id, Data("AABBCCDDEEFF".utf8))
+            XCTAssertEqual(id, Data([0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF]))
         }
         XCTAssertEqual(http.requestCount, 3)
     }
@@ -755,14 +755,15 @@ final class AuthenticationServiceTests: XCTestCase {
         // one for the rotated GUID.
         XCTAssertEqual(factory.hardwareIDs.count, 2)
         guard factory.hardwareIDs.count == 2 else { return }
-        XCTAssertEqual(factory.hardwareIDs[0], Data("AABBCCDDEEFF".utf8))
+        XCTAssertEqual(factory.hardwareIDs[0], Data([0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF]))
 
         // The rotated GUID was persisted and is a fresh, valid GUID.
         let stored = try XCTUnwrap(secrets.load(key: DeviceIdentity.keychainKey))
         let rotatedGUID = try XCTUnwrap(String(data: stored, encoding: .utf8))
         XCTAssertNotEqual(rotatedGUID, "AABBCCDDEEFF")
         XCTAssertTrue(DeviceIdentity.isValidGUID(rotatedGUID))
-        XCTAssertEqual(factory.hardwareIDs[1], Data(rotatedGUID.utf8))
+        XCTAssertEqual(factory.hardwareIDs[1], DeviceIdentity.machineID(forGUID: rotatedGUID))
+        XCTAssertEqual(factory.hardwareIDs[1].count, 6)
     }
 
     func testPersistentEmpty404AfterRotationStillFails() async {

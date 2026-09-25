@@ -34,7 +34,7 @@ public final class AppStoreClient: Sendable {
             try DeviceIdentity.currentGUID(secretStore: secrets)
         }
         let hardwareID = (try? DeviceIdentity.currentGUID(secretStore: secrets))
-            .flatMap { Data($0.utf8) } ?? Data()
+            .map { DeviceIdentity.machineID(forGUID: $0) } ?? Data()
         let assets = SAPAssets(http: http) { assetProgress in
             switch assetProgress {
             case .downloading(let completed, let total):
