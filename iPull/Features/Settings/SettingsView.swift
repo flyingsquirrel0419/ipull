@@ -9,9 +9,8 @@ struct SettingsView: View {
 
     @EnvironmentObject private var environment: AppEnvironment
     @Environment(\.dismiss) private var dismiss
-    @State private var folderName = SaveLocation.defaultFolderName
+    @State private var askWhereToSave = SaveLocation.askWhereToSave
     @State private var keepLibraryCopy = SaveLocation.keepLibraryCopy
-    @State private var folderError: String?
 
     var body: some View {
         NavigationStack {
@@ -21,29 +20,18 @@ struct SettingsView: View {
                 }
 
                 Section {
-                    Button(action: chooseFolder) {
-                        LabeledContent {
-                            Text(folderName ?? "Ask Every Time")
-                                .foregroundStyle(.secondary)
-                        } label: {
-                            Label("Save Downloads To", systemImage: "folder")
-                                .foregroundStyle(.primary)
-                        }
+                    Toggle("Ask Where to Save", isOn: $askWhereToSave)
+                        .onChange(of: askWhereToSave) { _, ask in SaveLocation.askWhereToSave = ask }
+                    if askWhereToSave {
+                        Toggle("Keep a Copy in Library", isOn: $keepLibraryCopy)
+                            .onChange(of: keepLibraryCopy) { _, keep in SaveLocation.keepLibraryCopy = keep }
                     }
-                    if folderName != nil {
-                        Button("Ask Every Time") {
-                            try? SaveLocation.setDefaultFolder(nil)
-                            folderName = nil
-                        }
-                    }
-                    Toggle("Keep a Copy in Library", isOn: $keepLibraryCopy)
-                        .onChange(of: keepLibraryCopy) { _, keep in SaveLocation.keepLibraryCopy = keep }
                 } header: {
                     Text("Downloads")
                 } footer: {
-                    Text(folderError ?? (folderName == nil
-                        ? "iPull asks where to save each IPA. Cancel the picker to keep it in iPull's Library (Files › On My iPhone › iPull)."
-                        : "IPAs are written to this folder in Files."))
+                    Text(askWhereToSave
+                         ? "When a download finishes, iPull opens Save to Files so you can pick any folder."
+                         : "IPAs stay in iPull's folder: Files › On My iPhone › iPull.")
                 }
 
                 Section("Storage") {
@@ -74,7 +62,7 @@ struct SettingsView: View {
                 }
             }
             .onAppear {
-                folderName = SaveLocation.defaultFolderName
+                askWhereToSave = SaveLocation.askWhereToSave
                 keepLibraryCopy = SaveLocation.keepLibraryCopy
             }
             .navigationTitle(presentedAsSheet ? "Account" : "Settings")
@@ -104,21 +92,6 @@ struct SettingsView: View {
             }
         }
         .padding(.vertical, 6)
-    }
-
-    private func chooseFolder() {
-        FolderPicker.present { folder in
-            guard let folder else { return }
-            do {
-                try SaveLocation.setDefaultFolder(folder)
-                folderName = SaveLocation.defaultFolderName ?? folder.lastPathComponent
-                folderError = nil
-                Log.info(.library, "download folder set")
-            } catch {
-                Log.error(.library, "saving the download folder failed: \(String(describing: type(of: error)))")
-                folderError = "That folder can't be used. Choose another one."
-            }
-        }
     }
 
     @ViewBuilder

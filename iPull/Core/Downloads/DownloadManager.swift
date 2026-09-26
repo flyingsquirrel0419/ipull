@@ -57,14 +57,14 @@ public final class DownloadManager: NSObject, ObservableObject {
 
     @discardableResult
     public func enqueue(app: AppStoreApp, version: AppStoreVersion, cdnURL: URL,
-                        destinationBookmark: Data? = nil) -> DownloadRecord {
+                        askWhereToSave: Bool = false) -> DownloadRecord {
         let record = DownloadRecord(
             appID: app.id, appName: app.name, bundleID: app.bundleID,
             version: version.displayVersion ?? version.externalVersionID,
             externalVersionID: version.externalVersionID, state: .queued,
             totalBytes: app.fileSizeBytes ?? 0,
             iconURL: app.iconURL,
-            destinationBookmark: destinationBookmark
+            askWhereToSave: askWhereToSave
         )
         pendingURLs[record.id] = cdnURL
         records.append(record)
@@ -124,6 +124,29 @@ public final class DownloadManager: NSObject, ObservableObject {
         task.resume()
         Log.info(.download, "download started (host \(url.host ?? "?"), resume=\(resuming))")
         update(record.id) { $0.state = .downloading }
+    }
+
+    /// Show "Save to Files" for a finished IPA. Saved elsewhere without a
+    /// Library copy, the internal file is removed; otherwise (including a
+    /// cancelled sheet) the IPA is registered in the Library as usual.
+    private func offerSave(record: DownloadRecord, file: URL) async {
+        #if canImport(UIKit)
+        let saved: URL? = await withCheckedContinuation { continuation in
+            FilesExporter.present(file) { continuation.resume(returning: $0) }
+        }
+        if let saved {
+            let folder = saved.deletingLastPathComponent().lastPathComponent
+            Log.info(.download, "IPA saved to Files")
+            update(record.id) { $0.savedFolderName = folder }
+            if !SaveLocation.keepLibraryCopy {
+                try? FileManager.default.removeItem(at: file)
+                return
+            }
+        } else {
+            Log.info(.download, "Save to Files dismissed; kept in Library")
+        }
+        #endif
+        await onCompleted(record, file)
     }
 
     private func update(_ id: UUID, _ mutate: (inout DownloadRecord) -> Void) {
@@ -200,29 +223,16 @@ extension DownloadManager: URLSessionDownloadDelegate {
                 try FileManager.default.moveItem(at: staged, to: destination)
                 Log.info(.download, "download completed (\(record.totalBytes) bytes)")
 
-                // Write to the folder the user picked. Without a Library copy
-                // the file is moved there; if that fails it stays in Library.
-                var keepInLibrary = true
-                var savedFolder: String?
-                if let bookmark = record.destinationBookmark {
-                    let move = !SaveLocation.keepLibraryCopy
-                    do {
-                        let written = try SaveLocation.export(destination, to: bookmark, move: move)
-                        savedFolder = written.deletingLastPathComponent().lastPathComponent
-                        keepInLibrary = !move
-                        Log.info(.download, "IPA written to the chosen folder (moved=\(move))")
-                    } catch {
-                        Log.error(.download, "writing to the chosen folder failed: \(String(describing: type(of: error))); kept in Library")
-                    }
-                }
-                self.update(id) {
-                    $0.state = .completed
-                    $0.savedFolderName = savedFolder
-                }
+                self.update(id) { $0.state = .completed }
                 self.tasks.removeValue(forKey: id)
                 self.pendingURLs.removeValue(forKey: id)
                 self.progress.removeValue(forKey: id)
-                if keepInLibrary {
+                // Start the next transfer before waiting on the save sheet.
+                self.startNextIfPossible()
+
+                if record.askWhereToSave == true {
+                    await self.offerSave(record: record, file: destination)
+                } else {
                     await self.onCompleted(record, destination)
                 }
                 self.startNextIfPossible()
