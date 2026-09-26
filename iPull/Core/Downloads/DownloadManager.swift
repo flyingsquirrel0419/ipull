@@ -126,11 +126,24 @@ public final class DownloadManager: NSObject, ObservableObject {
         update(record.id) { $0.state = .downloading }
     }
 
-    /// Show "Save to Files" for a finished IPA. Saved elsewhere without a
-    /// Library copy, the internal file is removed; otherwise (including a
-    /// cancelled sheet) the IPA is registered in the Library as usual.
+    /// Write a finished IPA to the default folder, or show "Save to Files".
+    /// Saved elsewhere without a Library copy, the internal file is removed;
+    /// otherwise (including a cancelled sheet) it is registered in Library.
     private func offerSave(record: DownloadRecord, file: URL) async {
         #if canImport(UIKit)
+        if SaveLocation.defaultBookmark != nil {
+            let move = !SaveLocation.keepLibraryCopy
+            do {
+                let written = try SaveLocation.writeToDefaultFolder(file, move: move)
+                Log.info(.download, "IPA written to the default folder (moved=\(move))")
+                update(record.id) { $0.savedFolderName = written.deletingLastPathComponent().lastPathComponent }
+                if move { return }
+                await onCompleted(record, file)
+                return
+            } catch {
+                Log.error(.download, "writing to the default folder failed: \(String(describing: type(of: error))); asking instead")
+            }
+        }
         let saved: URL? = await withCheckedContinuation { continuation in
             FilesExporter.present(file) { continuation.resume(returning: $0) }
         }

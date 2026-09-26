@@ -10,6 +10,8 @@ struct SettingsView: View {
     @EnvironmentObject private var environment: AppEnvironment
     @Environment(\.dismiss) private var dismiss
     @State private var askWhereToSave = SaveLocation.askWhereToSave
+    @State private var folderName = SaveLocation.defaultFolderName
+    @State private var folderError: String?
     @State private var keepLibraryCopy = SaveLocation.keepLibraryCopy
 
     var body: some View {
@@ -20,18 +22,34 @@ struct SettingsView: View {
                 }
 
                 Section {
+                    Button(action: chooseFolder) {
+                        LabeledContent {
+                            Text(folderName ?? "None").foregroundStyle(.secondary)
+                        } label: {
+                            Label("Default Folder", systemImage: "folder")
+                                .foregroundStyle(.primary)
+                        }
+                    }
+                    if folderName != nil {
+                        Button("Remove Default Folder", role: .destructive) {
+                            try? SaveLocation.setDefaultFolder(nil)
+                            folderName = nil
+                        }
+                    }
                     Toggle("Ask Where to Save", isOn: $askWhereToSave)
                         .onChange(of: askWhereToSave) { _, ask in SaveLocation.askWhereToSave = ask }
-                    if askWhereToSave {
+                    if askWhereToSave || folderName != nil {
                         Toggle("Keep a Copy in Library", isOn: $keepLibraryCopy)
                             .onChange(of: keepLibraryCopy) { _, keep in SaveLocation.keepLibraryCopy = keep }
                     }
                 } header: {
                     Text("Downloads")
                 } footer: {
-                    Text(askWhereToSave
-                         ? "When a download finishes, iPull opens Save to Files so you can pick any folder."
-                         : "IPAs stay in iPull's folder: Files › On My iPhone › iPull.")
+                    Text(folderError ?? (folderName != nil
+                         ? "Finished IPAs are saved to \(folderName ?? "") automatically. If that fails, iPull asks instead."
+                         : askWhereToSave
+                            ? "When a download finishes, iPull opens Save to Files so you can pick any folder."
+                            : "IPAs stay in iPull's folder: Files › On My iPhone › iPull."))
                 }
 
                 Section("Storage") {
@@ -62,6 +80,7 @@ struct SettingsView: View {
                 }
             }
             .onAppear {
+                folderName = SaveLocation.defaultFolderName
                 askWhereToSave = SaveLocation.askWhereToSave
                 keepLibraryCopy = SaveLocation.keepLibraryCopy
             }
@@ -92,6 +111,21 @@ struct SettingsView: View {
             }
         }
         .padding(.vertical, 6)
+    }
+
+    private func chooseFolder() {
+        FolderChooser.present { folder in
+            guard let folder else { return }
+            do {
+                try SaveLocation.setDefaultFolder(folder)
+                folderName = SaveLocation.defaultFolderName ?? folder.lastPathComponent
+                folderError = nil
+                Log.info(.library, "default download folder set")
+            } catch {
+                Log.error(.library, "setting the default folder failed: \(String(describing: type(of: error)))")
+                folderError = "That folder can't be used. Choose another one."
+            }
+        }
     }
 
     @ViewBuilder

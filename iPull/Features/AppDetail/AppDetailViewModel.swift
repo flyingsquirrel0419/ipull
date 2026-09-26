@@ -122,7 +122,9 @@ final class AppDetailViewModel: ObservableObject {
             // Already in Library: offer that copy instead of downloading the
             // same IPA again.
             downloadStatus = "Already downloaded — see Library."
-            if SaveLocation.askWhereToSave {
+            if let written = try? SaveLocation.writeToDefaultFolder(existing, move: false) {
+                downloadStatus = "Saved to \(written.deletingLastPathComponent().lastPathComponent)."
+            } else if SaveLocation.askWhereToSave {
                 FilesExporter.present(existing) { [weak self] saved in
                     if let saved {
                         self?.downloadStatus = "Saved to \(saved.deletingLastPathComponent().lastPathComponent)."
@@ -152,10 +154,10 @@ final class AppDetailViewModel: ObservableObject {
                 releaseDate: version.releaseDate,
                 isLatest: version.isLatest
             )
-            Log.info(.download, "download URL resolved; queueing (askWhereToSave=\(SaveLocation.askWhereToSave))")
+            Log.info(.download, "download URL resolved; queueing (outside=\(SaveLocation.routesOutsideLibrary))")
             environment.rememberOwnedApp(app.id)
             environment.downloadManager.enqueue(app: app, version: resolvedVersion, cdnURL: metadata.url,
-                                                askWhereToSave: SaveLocation.askWhereToSave)
+                                                askWhereToSave: SaveLocation.routesOutsideLibrary)
             return true
         } catch let error as AppStoreError {
             Log.error(.download, "download URL resolution failed: \(error)")

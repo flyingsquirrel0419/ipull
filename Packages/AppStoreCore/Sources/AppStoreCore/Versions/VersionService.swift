@@ -39,7 +39,11 @@ public final class VersionService: VersionServicing, @unchecked Sendable {
         guard let rawIDs = item.metadata["softwareVersionExternalIdentifiers"] as? [Any] else {
             throw AppStoreError.versionUnavailable
         }
+        // Apple lists external version IDs oldest first and they grow over
+        // time; show newest first so the latest builds lead the list and get
+        // their display versions resolved.
         let ids = rawIDs.map { String(describing: $0) }
+            .sorted { (Int64($0) ?? 0) > (Int64($1) ?? 0) }
         let latest = item.metadata["softwareVersionExternalIdentifier"].map { String(describing: $0) }
             ?? ids.first ?? ""
 
